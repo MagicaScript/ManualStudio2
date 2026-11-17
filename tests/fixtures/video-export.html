@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Video export verification</title><canvas width="80" height="80"></canvas><output></output>
+<script type="module">
+import { encodeVideoFrames } from '/src/video.ts';
+import { interpolateFrames } from '/shared/document.ts';
+const canvas = document.querySelector('canvas'), context = canvas.getContext('2d');
+const start = { id: 'start', name: 'Start', kind: 'start', poses: { support: { position: [0, 0, 0], quaternion: [0, 0, 0, 1] } }, hidden: [], notes: [], duration: 2 };
+const end = { ...start, id: 'end', name: 'End', kind: 'end', poses: { support: { position: [0, 0, 10], quaternion: [0, 0, 0, 1] } }, hidden: ['support'] };
+const samples = [], endpoints = [];
+const video = await encodeVideoFrames(canvas, [2, 2, 2, 2, 2, 2], (segment, t) => {
+  const frame = interpolateFrames(start, end, t);
+  samples.push([segment, t]);
+  if (t === 1) endpoints.push({ hidden: frame.hidden, position: frame.poses.support.position });
+  context.fillStyle = frame.hidden.includes('support') ? '#00ff00' : '#ff0000'; context.fillRect(0, 0, 80, 80);
+});
+document.querySelector('output').textContent = JSON.stringify({ samples, endpoints, bytes: Array.from(new Uint8Array(await video.arrayBuffer())) });
+document.documentElement.dataset.videoTestComplete = 'true';
+</script></html>

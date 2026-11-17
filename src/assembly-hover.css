@@ -1,0 +1,130 @@
+:is(.left-panel, #guide, .assembly-list) {
+  --assembly-hover-background: #46464b;
+  --assembly-hover-border: #72747a;
+  --assembly-hover-text: #f0f0f2;
+  --assembly-focus-ring: #9bc9aa;
+}
+
+:is(.left-panel, #guide, .assembly-list) :is(button, select, input, textarea) {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+:is(.left-panel, #guide, .assembly-list) button:enabled:not(.active):not(.primary):not([data-insert-before]):is(:hover, :focus-visible) {
+  background: var(--assembly-hover-background);
+  color: var(--assembly-hover-text);
+  box-shadow: inset 0 0 0 1px var(--assembly-hover-border);
+}
+
+:is(.left-panel, #guide, .assembly-list) button.active:enabled:is(:hover, :focus-visible) {
+  background: #335139;
+  border-color: var(--assembly-green);
+  box-shadow: inset 0 0 0 1px var(--assembly-green);
+}
+
+:is(.left-panel, #guide, .assembly-list) button.primary:enabled:is(:hover, :focus-visible) {
+  background: #00bf4b;
+  box-shadow: inset 0 0 0 1px #62d88b;
+}
+
+:is(.left-panel, #guide, .assembly-list) :is(button, select, input, textarea):enabled:focus-visible {
+  outline: 1px solid var(--assembly-focus-ring);
+  outline-offset: 2px;
+}
+
+.left-panel .panel-help:enabled:is(:hover, :focus-visible) { opacity: 1; }
+
+.left-panel .structure-scroll:not(.step-reordering) .step-card:is(:hover, :focus-within) {
+  background: #35363b;
+  border-color: #707177;
+}
+
+.left-panel .structure-scroll:not(.step-reordering) .step-card.active:is(:hover, :focus-within) {
+  background: #303b34;
+  border-color: var(--assembly-green);
+}
+
+.left-panel .step-tag[draggable="true"]:is(:hover, :focus-visible) {
+  background: #57585e;
+  color: var(--assembly-hover-text);
+  box-shadow: inset 0 0 0 1px #74767a;
+}
+
+.left-panel .step-card.active .step-tag[draggable="true"]:is(:hover, :focus-visible) {
+  background: #35542f;
+  color: #72d55b;
+  box-shadow: inset 0 0 0 1px #4d8252;
+}
+
+.left-panel [data-rename-step]:is(:hover, :focus-visible) {
+  background: #424348;
+  color: var(--assembly-hover-text);
+  border-radius: 2px;
+}
+
+.left-panel .step-chip-row[data-drop-step]:is(:hover, :focus-visible) .chip,
+.left-panel .chip[data-assembly][draggable="true"]:is(:hover, :focus-visible) {
+  background: #55585c;
+  color: var(--assembly-hover-text);
+}
+
+.left-panel .step-chip-row[data-drop-step]:is(:hover, :focus-visible) .chip.assembly,
+.left-panel .chip.assembly[data-assembly][draggable="true"]:is(:hover, :focus-visible) {
+  background: #3b5143;
+  color: #d5e8db;
+}
+
+.left-panel .step-drop:not(.drop-active):is(:hover, :focus-visible) {
+  background: #383e3c;
+  border-color: #8b9c92;
+  color: var(--assembly-hover-text);
+}
+
+.left-panel .insert-step-gap button:enabled:is(:hover, :focus-visible) {
+  background: #34553b;
+  border-color: var(--assembly-green);
+  box-shadow: inset 0 0 0 1px #4b845e;
+}
+
+#guide .frame-card:is(:hover, :focus-within) {
+  background: #3d4140;
+  border-color: #929b95;
+}
+
+#guide .frame-card:is(:hover, :focus-within) .frame-placeholder { background: #484c4a; }
+
+#guide .frame-card.active:is(:hover, :focus-within) {
+  background: #304537;
+  border-color: var(--assembly-green);
+}
+
+#guide .frame-card.active:is(:hover, :focus-within) .frame-placeholder { background: #3a5141; }
+
+#guide :is(select, input:not([type="checkbox"]), textarea):enabled:hover {
+  background-color: #37383e;
+  border-color: #85888f;
+}
+
+#guide :is(select, input:not([type="checkbox"]), textarea):enabled:focus-visible { border-color: #8dbb9d; }
+
+#guide label.guide-field:has(input[type="checkbox"]:enabled):hover {
+  background: #3b423d;
+  color: var(--assembly-hover-text);
+  border-radius: 3px;
+}
+
+#guide input[type="checkbox"]:enabled:hover {
+  outline: 1px solid #93b09e;
+  outline-offset: 2px;
+}
+
+:is(.left-panel, #guide, .assembly-list) button:disabled:hover {
+  background: #414247;
+  box-shadow: none;
+}
+
+:is(.left-panel, #guide, .assembly-list) :is(button.icon, .card-actions button, .connection-button, .note-buttons button):disabled:hover { background: transparent; }
+:is(.left-panel, #guide, .assembly-list) button.primary:disabled:hover { background: var(--assembly-green); }
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.left-panel, #guide, .assembly-list) :is(button, select, input, textarea) { transition: none; }
+}

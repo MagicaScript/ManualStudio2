@@ -1,0 +1,77 @@
+.note-color-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+  font-size: 11px;
+}
+
+.note-color-field > span {
+  flex: 0 0 54px;
+}
+
+.annotation-palette {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.8px;
+  padding: 4px 8px;
+  border: 1px solid #46464a;
+  border-radius: 4px;
+  background: #2d2d31;
+}
+
+.annotation-palette .annotation-swatch {
+  position: relative;
+  display: block;
+  flex: 0 0 14.4px;
+  width: 14.4px;
+  height: 14.4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.annotation-swatch > span {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.annotation-swatch[data-preset-color="#ffffff"] > span {
+  box-shadow: inset 0 0 0 1px #646468;
+}
+
+.annotation-swatch::after {
+  content: '';
+  position: absolute;
+  inset: -2.4px;
+  border: 1.8px solid transparent;
+  border-radius: 4.4px;
+  pointer-events: none;
+}
+
+.annotation-swatch[aria-pressed="true"]::after,
+.annotation-swatch.saved-note-color::after {
+  border-color: #00ae42;
+}
+
+.annotation-swatch[aria-pressed="false"]:hover::after {
+  border-color: #a0a0a4;
+}
+
+.annotation-swatch:focus-visible::after {
+  border-color: #f2f2f2;
+}
+
+.annotation-palette .saved-note-color {
+  background: var(--saved-color);
+}
+
+@media (max-width: 800px) {
+  .note-editor .note-color-field {
+    flex-wrap: wrap;
+  }
+}

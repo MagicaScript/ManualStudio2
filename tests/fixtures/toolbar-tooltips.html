@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Toolbar tooltip verification</title></head>
+<body>
+  <header class="topbar">
+    <button id="saveButton" class="icon" title="Save project"></button>
+    <button id="undoButton" class="icon" title="Undo (Ctrl+Z)" disabled></button>
+    <button id="redoButton" class="icon" title="Redo (Ctrl+Shift+Z)" disabled></button>
+  </header>
+  <button id="outside" style="position:absolute;left:200px;top:100px">Outside the toolbar</button>
+  <script type="module" src="./toolbar-tooltips.ts"></script>
+</body>
+</html>

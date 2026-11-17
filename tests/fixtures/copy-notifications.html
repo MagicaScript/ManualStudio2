@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Copy confirmations</title></head>
+<body>
+  <button id="copy">Copy name</button>
+  <button id="status">Show status</button>
+  <button id="error">Show error</button>
+  <script type="module">
+    import '/src/style.css';
+    import { toast } from '/src/ui.ts';
+    document.querySelector('#copy').addEventListener('click', () => toast('Name copied to clipboard.', 'copy'));
+    document.querySelector('#status').addEventListener('click', () => toast('Status remains visible.'));
+    document.querySelector('#error').addEventListener('click', () => toast('Error: Detailed error remains visible.', 9000));
+  </script>
+</body></html>

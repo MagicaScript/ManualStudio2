@@ -1,0 +1,37 @@
+# Bambu Assembly Reference
+
+Reference release: [Bambu Studio v02.09.01.70](https://github.com/bambulab/BambuStudio/releases/tag/v02.09.01.70), published as the 2.9.1 stable release. This is the full release tag corresponding to the version requested for the rebuild.
+
+The implementation is a fresh TypeScript/three.js application. The upstream source was inspected for Assembly behavior, layout, data relationships and dark-mode colors.
+
+| Reference source | Behavior implemented in ManualStudio |
+| --- | --- |
+| [AssemblyStepsUtilsImgui.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp) | Assembly Structure cards, right-side tree, object-selection popup, connection types, note tools, labels, timeline, display modes, playback controls and export options |
+| [AssemblyStepsUtils.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.cpp) | Step copy/inheritance, membership, keyframe snapshots, playback ordering, frame interpolation and export sequencing |
+| [AssemblyStepsUtils.hpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.hpp) | UI state, 99 ordinary-step limit, playback/display modes and public Assembly operations |
+| [AssemblyStepsJson.hpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/libslic3r/Format/AssemblyStepsJson.hpp) | Stable step references, inherited assembled objects, camera snapshots, per-frame transforms, notes and labels |
+| [OverviewUtils.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/OverviewUtils.cpp) | Independent assembly poses and source-model relationships |
+| [ImGuizmo.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/imguizmo/ImGuizmo.cpp) | Navigator face grid, 26 directions, shared face/edge/corner highlighting, projected labels, coordinate arrows and constrained drag |
+| [GLCanvas3D.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/GLCanvas3D.cpp) | 128-pixel navigator, dark colors and Ctrl+1 through Ctrl+7 view shortcuts |
+| [Camera.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Camera.cpp) | Cardinal-view orientations, top/bottom up vectors and the isometric preset |
+| [gouraud.vs](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/resources/shaders/140/gouraud.vs) | Camera-relative directional-light placement |
+| [GLGizmosCommon.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Gizmos/GLGizmosCommon.cpp) | Camera-aligned section normal, retained plane direction and radius-based slider travel |
+| [OpenGLManager.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/OpenGLManager.cpp) | Solid cross-section color: RGB (1, 0.37, 0) |
+| [3DScene.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/3DScene.cpp) | Assembly-offset explosion formula, transparent bounds sorting, face culling and alpha blending |
+| [AssemblyStepsUtilsImgui.cpp, name editing](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp#L4990-L5110) | Double-click name editing with selected text, Enter commit and focus-loss commit |
+| [AssemblyStepsUtils.cpp, rename propagation](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.cpp#L6531-L6630) | Shared backing names for the Assembly list and canvas labels |
+| [BBLTopbar.cpp, toolbar help](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/BBLTopbar.cpp#L234-L253) | Native bordered Save, Undo and Redo tooltips through `SetShortHelp` |
+| [AssemblyStepsUtils.cpp, Final assembly](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.cpp#L5502-L5635) | One dedicated whole-model summary, synchronized to source inventory and sequenced after ordinary operations |
+| [AssemblyStepsUtilsImgui.cpp, picker confirmation](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp#L7634-L7681) | Selection preview stays uncommitted until OK; Cancel restores the initial state and confirmation creates one Undo entry |
+| [AssemblyStepsUtils.cpp, checked-card merge](https://github.com/bambulab/BambuStudio/blob/56a57d00a591360cf41bf21383915ee5bf357be5/src/slic3r/GUI/Overview/AssemblyStepsUtils.cpp) | `merge_checked_assembly_steps` retains source cards, combines Start/End snapshots in structure order, drops copied annotations/transitions, and rebuilds output cameras/labels |
+| [AssemblyStepsUtilsImgui.cpp, Merge and Final controls](https://github.com/bambulab/BambuStudio/blob/56a57d00a591360cf41bf21383915ee5bf357be5/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp) | Select All/Cancel/Confirm transaction; Final allows keyframe insertion, move/rotate and auto-teardown |
+| [AssemblyStepsUtilsInternal.hpp, note colors](https://github.com/bambulab/BambuStudio/blob/56a57d00a591360cf41bf21383915ee5bf357be5/src/slic3r/GUI/Overview/AssemblyStepsUtilsInternal.hpp#L32-L40) | Original seven shape colors and palette order; `render_note_color_control` supplies swatch dimensions and the green selection outline. Caption backgrounds use darker presets for the requested fixed white text. |
+| [AssemblyStepsUtilsImgui.cpp, annotation strokes](https://github.com/bambulab/BambuStudio/blob/56a57d00a591360cf41bf21383915ee5bf357be5/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp#L1642) | 2 px lines, part-name leader RGBA (0, 0.78, 0.31, 0.86), circle and rectangle screen-facing outlines, and the 12 px arrowhead base. ManualStudio projects its 3D anchors and millimeter sizes into these outlines for both editing and capture. |
+
+The requested extensions add 3D thumbnails, canvas-to-list navigation, canvas-to-step drag and completed groups, reviewed 3MF synchronization, a shared command API, real surface anchors, multi-region glue painting and support removal. The interface uses the reference dark grays and green selection accents. The browser renderer, controls and icons are implemented in this repository.
+
+Relevant source observations: the reference’s Pencil note button is commented out; ManualStudio provides a working surface pencil. The reference stores several annotation offsets in screen space; ManualStudio stores 3D target anchors and retains a screen offset only for the readable label. Original STEP-tree display is tied to STEP import; the requested 3MF workflow retains its source object/part hierarchy and stable identity information.
+
+`GLVolume::world_matrix()` translates by the instance assembly offset plus the volume offset, multiplied by `explosion_ratio - 1`; it does not normalize a radial direction. Step teardown is a separate operation: `auto_explode_current_keyframe()` chooses the dominant displacement axis, sorts parts in each of six directions, and places them outside the overall bounds with a 5 mm gap. Inherited assemblies contribute to the bounds but remain fixed.
+
+`AssemblyStepsUtils` sets other-part alpha to 0.15. ManualStudio blends that pass after tone mapping, with front-face rendering and a rebuilt opaque depth buffer, so its HDR scene pipeline does not brighten the transparent context. The green keyboard control in `GLCanvas3D` is a hover-help affordance; ManualStudio lists its implemented assembly shortcuts there.

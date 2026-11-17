@@ -1,0 +1,5 @@
+.inline-name-editor{position:fixed;z-index:1000;margin:0;padding:2px 4px;border:1px solid #5a5c61;border-radius:3px;background:#29292e;color:#eee;box-shadow:none;line-height:1.25;min-width:0}
+.inline-name-editor:focus{outline:1px solid #00ae42;outline-offset:0}
+.inline-name-target{color:transparent!important}
+.part-name-text{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.part-name-text,.axis-row .part-name,.object-name{cursor:default}

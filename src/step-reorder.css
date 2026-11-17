@@ -1,0 +1,39 @@
+.insert-step-gap[data-reorder-before] {
+  transition: height 180ms cubic-bezier(.2,.8,.2,1);
+}
+.step-reorder-end { height: 12px; }
+.step-reordering .step-reorder-end { min-height: 22px; }
+.step-reordering .insert-step-gap > button { visibility: hidden; }
+.step-reordering .step-card { transition: opacity 120ms ease; }
+.step-reorder-source { opacity: .32; }
+.step-reordering .step-reorder-target {
+  height: calc(var(--reorder-card-height) + 24px);
+}
+.step-reorder-target::after {
+  content: '';
+  position: absolute;
+  inset: 12px 0;
+  border: 1px dashed #00be55;
+  border-radius: 4px;
+  background: #00ae4214;
+  pointer-events: none;
+}
+.step-reorder-original::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  height: 2px;
+  background: #00ae42;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .insert-step-gap[data-reorder-before], .step-reordering .step-card { transition: none; }
+}
+.merging-steps .insert-step-gap { display: none; }
+.merging-steps .card-actions input { width: 17px; height: 17px; margin: 0 4px; }
+#mergeControls { width: 100%; padding: 2px 5px; }
+#mergeControls > .row { justify-content: flex-end; }
+#mergeResult { text-align: right; margin: 7px 0 0; }
+#selectionStep { font-size: 10px; }

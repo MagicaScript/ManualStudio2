@@ -1,0 +1,30 @@
+.toolbar-tooltip-target {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.toolbar-tooltip-target > button:disabled {
+  pointer-events: none;
+}
+
+.toolbar-tooltip-target:hover > button:not(:disabled) {
+  background: #244c65;
+  border-color: #6f9db9;
+}
+
+.toolbar-tooltip {
+  position: fixed;
+  z-index: 200;
+  width: max-content;
+  max-width: calc(100vw - 8px);
+  padding: 2px 4px;
+  border: 1px solid #767676;
+  border-radius: 0;
+  background: #ffffe1;
+  color: #1c1c1c;
+  box-shadow: 1px 2px 3px #0003;
+  font: 12px/1.25 "Segoe UI", Arial, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}

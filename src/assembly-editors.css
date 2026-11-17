@@ -1,0 +1,13 @@
+.assembly-editor > label { align-items: center; gap: 12px; }
+.assembly-editor > label > span { flex: 0 0 200px; }
+.assembly-editor fieldset { border: 1px solid #4a4b50; border-radius: 4px; padding: 8px 12px 10px; margin: 12px 0; min-width: 0; }
+.assembly-editor legend { color: #d2d4d5; padding: 0 5px; }
+.assembly-editor .assembly-editor-vector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.assembly-editor .assembly-editor-vector > label { margin: 0; gap: 6px; }
+.assembly-editor .assembly-editor-vector input { width: 100%; }
+.assembly-editor .assembly-editor-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.assembly-editor .assembly-editor-pair label { margin: 0; }
+.assembly-editor select { max-width: 100%; }
+.assembly-editor .region-plane { position: relative; }
+.assembly-editor .region-plane-remove { position: absolute; right: 8px; top: -19px; padding: 1px 6px; background: #303136; font-size: 10px; }
+.assembly-editor .region-attachment > summary { cursor: pointer; color: #bfc4c4; padding: 5px 0; }

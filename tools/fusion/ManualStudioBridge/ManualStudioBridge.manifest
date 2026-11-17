@@ -1,0 +1,9 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "author": "ManualStudio",
+  "description": { "": "Read Fusion cloud models, native materials and construction axes into ManualStudio." },
+  "version": "1.0.0",
+  "runOnStartup": true,
+  "supportedOS": "windows"
+}

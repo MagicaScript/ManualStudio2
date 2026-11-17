@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Assembly hover verification</title></head>
+<body>
+<aside class="left-panel panel" style="top:12px;max-height:none">
+  <header class="panel-header"><button class="icon" id="collapseStructure">⌃</button><span>Assembly Structure</span><button class="icon panel-help" id="structureHelp">?</button></header>
+  <div id="structure" class="structure-scroll" style="max-height:none">
+    <div class="step-card overview" id="overview" data-overview><span class="step-tag">Default</span><h3>Overall preview</h3></div>
+    <div class="insert-step-gap"><button id="insertStep" data-insert-before="selected">＋ Insert Step</button></div>
+    <article class="step-card active" id="selectedStep" data-step="selected">
+      <div class="step-card-top"><span class="step-tag" id="stepTag" draggable="true" data-reorder="selected">Step 1</span><span class="card-actions"><button id="copyStep" title="Copy">▣</button><button id="disabledCopy" disabled title="Disabled copy">▣</button><button id="deleteStep" title="Delete">×</button></span></div>
+      <h3 id="stepName" data-rename-step="selected">Bond shaft</h3>
+      <div class="step-chip-row" id="partChips" data-drop-step="selected" draggable="true"><span class="chip">Tube</span><span class="chip assembly" draggable="true" data-assembly="first">Assembly</span></div>
+    </article>
+    <div class="insert-step-gap"></div>
+    <article class="step-card" id="emptyStep"><span class="step-tag">Step 2</span><h3>Install parts</h3><div class="step-drop" id="addObjects" data-drop-step="empty">Click to add objects</div></article>
+  </div>
+  <footer class="add-step-row"><button class="primary" id="addStep">Add Step</button><button class="icon" id="footerReturn">↩</button><button class="primary" id="disabledPrimary" disabled>Disabled</button></footer>
+</aside>
+<aside id="guide" class="right-tools panel" style="position:absolute;left:430px;top:12px;width:384px;max-height:none">
+  <header class="panel-header"><span>Assembly Guide</span><button id="collapseGuide">⌃</button></header>
+  <div class="guide-content">
+    <section class="guide-section"><h4>Connection Type</h4><div class="connection-buttons"><button class="connection-button" id="clip">Clip</button><button class="connection-button active" id="glue">Glue</button><button class="connection-button" id="disabledConnection" disabled>Screw</button></div></section>
+    <section class="guide-section"><h4 id="staticHeading">Add Notes</h4><div class="note-buttons"><button id="rectangle">□</button><button id="selectedNote" class="active">○</button></div><div class="guide-field"><span>Snap to</span><select id="snap"><option>Surface point</option></select></div><div class="guide-field"><span>Radius</span><input id="radius" type="number" value="3"></div><label class="guide-field"><input id="labels" type="checkbox" checked>Show labels</label></section>
+    <section class="guide-section"><h4>Timeline <button id="playStep">▷</button></h4><div class="timeline"><div class="frame-card active" id="activeFrame" data-frame="start"><div class="frame-placeholder">◇</div>Start frame</div><div class="frame-card" id="transitionFrame" data-frame="transition"><div class="frame-placeholder">◇</div>Transition<button class="delete-frame" id="deleteFrame">×</button></div></div><div class="timeline-actions"><button id="addFrame">＋ Keyframe</button><button id="saveFrame">Save update</button><button id="cameraAll">Camera → all</button></div></section>
+    <section class="guide-section"><textarea id="description">Assembly instructions</textarea><button id="partProperties">Part…</button></section>
+  </div>
+</aside>
+<button id="outside" style="position:absolute;left:20px;top:700px">Outside panels</button>
+<script type="module">
+import '/src/style.css';
+import '/src/layout.css';
+import '/src/bambu.css';
+import '/src/step-reorder.css';
+import '/src/assembly-hover.css';
+</script>
+</body>
+</html>

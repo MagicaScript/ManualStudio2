@@ -1,0 +1,38 @@
+.right-tools{display:flex;flex-direction:column;max-height:68%;overflow:hidden}
+.right-tools>.panel-header{flex:0 0 35px}
+.right-tools>.guide-content{overflow:auto;min-height:0;padding:8px}
+.right-tools>.guide-section{flex:0 0 auto;margin:0 8px 8px;border-top:1px solid #4d4e54}
+.guide-section{padding:7px;margin-bottom:8px}
+.guide-section h4{margin-bottom:7px}
+.connection-button{padding:6px 2px;font-size:10px;white-space:nowrap}
+.connection-button span{line-height:20px;height:22px}
+.guide-field input[type=color]{height:22px;flex:0 0 38px;width:38px;padding:1px}
+.explosion-toggle{font-size:15px;padding:0 3px;background:transparent;margin-left:auto}
+.frame-placeholder{height:38px}
+.frame-card img{height:38px}
+.timeline-actions{margin-top:4px}
+.navigation{left:0;bottom:0;gap:14px}
+.view-navigator{width:128px;height:128px;position:relative;flex:0 0 128px}
+.view-navigator>canvas{display:block;width:128px;height:128px;touch-action:none;outline:none}
+.view-navigator>canvas:focus-visible{outline:1px solid #777;outline-offset:-2px}
+.navigation>.round-button{width:36px;height:36px;margin-bottom:10px;display:grid;place-items:center;background:#28292b;color:#d7d7d7}
+.navigation>.round-button:first-of-type{margin-left:-10px}
+.navigation>.round-button svg{width:24px;height:24px}
+.part-row:focus-visible{outline:1px solid #60ba81;outline-offset:-1px}
+.part-material{display:block;color:#9caaad;font-size:9px;line-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.part-metadata{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-size:12px;margin:12px 0}
+.part-metadata dt{color:#a2a6aa}.part-metadata dd{margin:0}
+.workspace-tabs .project-select{height:26px;align-self:center;margin:0 10px;padding:0 22px 0 7px;line-height:normal;min-width:160px}
+.shortcut-help{position:relative;display:flex;align-items:center;border-right:1px solid #00ae42;padding-right:8px;margin-right:2px}
+.shortcut-help>button{display:grid;place-items:center;padding:0;background:transparent;color:#00ae42;width:25px;height:22px}
+.shortcut-help>button svg{width:25px;height:20px}
+.assembly-shortcuts{position:absolute;left:-9px;bottom:calc(100% + 12px);width:330px;display:none;grid-template-columns:125px 1fr;gap:8px 12px;background:#242529;border:1px solid #62646a;border-radius:4px;padding:13px;box-shadow:0 3px 12px #0005;font-size:12px;z-index:20}
+.assembly-shortcuts dt{color:#00bf55;margin:0}.assembly-shortcuts dd{margin:0;color:#eee}
+.shortcut-help:hover .assembly-shortcuts,.shortcut-help:focus-within .assembly-shortcuts{display:grid}
+.bottom-controls #sectionLabel{width:88px;text-align:left}.bottom-controls #resetSectionDirection{padding:2px 5px;font-size:11px;min-width:88px}
+.bottom-controls input.section-value,.bottom-controls input.explosion-value{width:42px;height:20px;padding:0 3px;line-height:18px;font-size:10px;appearance:textfield}
+.bottom-controls input[type=number]::-webkit-inner-spin-button{appearance:none}
+.insert-step-gap{height:22px;display:flex;align-items:center;justify-content:center;margin:-5px 0 5px}
+.insert-step-gap button{font-size:10px;padding:2px 10px;background:transparent;color:#91999a;border:1px solid transparent;border-radius:12px}
+.insert-step-gap:hover button,.insert-step-gap button:focus-visible{color:#c8efd5;border-color:#00ae42;background:#284735}
+@media(max-width:800px){.left-panel{width:218px}.right-stack{width:240px}.return-button{left:238px}.material-bar{display:none}.viewport-tools{top:4px}.export-button{right:258px}.object-picker{left:238px;width:290px}.bottom-controls{left:10px;right:10px;transform:none;justify-content:center}.bottom-controls input[type=range]{width:50px}.bottom-controls span{font-size:9px}.playbar{left:240px;right:255px;transform:none;max-width:none;width:auto}.playbar select{max-width:100px}.note-editor{right:258px;width:240px}.project-title{display:none}.project-select{max-width:180px}.workspace-tabs #importButton,.workspace-tabs #syncButton{font-size:10px}}
