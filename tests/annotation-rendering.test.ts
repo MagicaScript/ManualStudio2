@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer } from 'vite';
 
 test('anchored annotation outlines face the camera, retain pixel strokes and match capture at both pixel ratios', { timeout: 60000 }, async () => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath);
   const server = await createServer({ configFile: false, root: process.cwd(), logLevel: 'error', server: { host: '127.0.0.1', port: 0 }, appType: 'mpa' });
   const browser = await chromium.launch({ executablePath, headless: true });

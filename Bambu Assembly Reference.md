@@ -13,6 +13,8 @@ The implementation is a fresh TypeScript/three.js application. The upstream sour
 | [OverviewUtils.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/OverviewUtils.cpp) | Independent assembly poses and source-model relationships |
 | [ImGuizmo.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/imguizmo/ImGuizmo.cpp) | Navigator face grid, 26 directions, shared face/edge/corner highlighting, projected labels, coordinate arrows and constrained drag |
 | [GLCanvas3D.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/GLCanvas3D.cpp) | 128-pixel navigator, dark colors and Ctrl+1 through Ctrl+7 view shortcuts |
+| [GLCanvas3D.cpp, mouse gestures](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/GLCanvas3D.cpp#L6264-L6414) | Middle-button pan and selection on right-button release |
+| [GUI_Factories.cpp, assembly menu](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/GUI_Factories.cpp#L471-L508) | Add to New Step, Add to Current Step and the Add to Existing Step submenu |
 | [Camera.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Camera.cpp) | Cardinal-view orientations, top/bottom up vectors and the isometric preset |
 | [gouraud.vs](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/resources/shaders/140/gouraud.vs) | Camera-relative directional-light placement |
 | [GLGizmosCommon.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Gizmos/GLGizmosCommon.cpp) | Camera-aligned section normal, retained plane direction and radius-based slider travel |

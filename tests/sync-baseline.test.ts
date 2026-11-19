@@ -67,6 +67,7 @@ test('a changed Fusion version replaces the inventory and only removes reference
   applyCommand(project, { type: 'part.remove', stepId: firstId, partIds: [support.id], value: true });
   first.description = 'Preserve this authored description.';
   first.frames[0].duration = 3;
+  first.frames[0].xrayPartIds = [shell.id, support.id];
   first.frames[0].notes = [note('shell-note', [shell.id]), note('support-note', [support.id]), note('joint-note', [shell.id, support.id])];
   first.groups = [
     { id: 'shell-group', name: 'Assembly', partIds: [shell.id, support.id], poses: copy(first.frames[0].poses) },
@@ -103,6 +104,7 @@ test('a changed Fusion version replaces the inventory and only removes reference
   assert.deepEqual(result.steps[0].frames[0].notes, [first.frames[0].notes[0]]);
   assert.deepEqual(result.steps[0].frames[0].poses, { [shell.id]: first.frames[0].poses[shell.id] });
   assert.equal(result.steps[0].frames[0].duration, 3);
+  assert.deepEqual(result.steps[0].frames[0].xrayPartIds, [shell.id]);
   assert.equal(result.steps[0].description, first.description);
   assert.deepEqual(result.steps[0].frames[1].hidden, []);
   assert.deepEqual(result.steps[0].groups, [{ ...first.groups[0], partIds: [shell.id], poses: { [shell.id]: first.groups[0].poses[shell.id] } }]);

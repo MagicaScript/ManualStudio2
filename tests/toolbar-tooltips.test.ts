@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'vite';
 import { chromium, type Browser } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 
 test('toolbar help appears on all three controls, including disabled undo and redo', { timeout: 30000 }, async () => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The toolbar check requires installed Chrome.');
   const server = await createServer({ configFile: false, root: process.cwd(), logLevel: 'error', server: { host: '127.0.0.1', port: 0 }, appType: 'mpa' });
   let browser: Browser | undefined;

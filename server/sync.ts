@@ -132,6 +132,7 @@ function pruneMissingParts(project: Project, previous: Model): void {
     for (const frame of step.frames) {
       for (const id of removed) delete frame.poses[id];
       frame.hidden = frame.hidden.filter(id => !removed.has(id));
+      if (frame.xrayPartIds) frame.xrayPartIds = frame.xrayPartIds.filter(id => !removed.has(id));
       if (frame.labels) { frame.labels.hiddenLabels = frame.labels.hiddenLabels.filter(id => !removed.has(id)); for (const id of removed) delete frame.labels.labelOffsets[id]; }
       frame.notes = frame.notes.filter(note => !note.anchors.some(anchor => removed.has(anchor.partId)));
     }

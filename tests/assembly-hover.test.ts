@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'vite';
 import { chromium, type Browser, type Locator } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 
 async function appearance(element: Locator) {
   return element.evaluate(node => {
@@ -13,9 +14,7 @@ async function appearance(element: Locator) {
 }
 
 test('assembly panel actions highlight without changing selected greens or disabled controls', { timeout: 30000 }, async context => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The hover check requires installed Chrome.');
   const server = await createServer({ configFile: false, root: process.cwd(), logLevel: 'error', server: { host: '127.0.0.1', port: 0 }, appType: 'mpa' });
   let browser: Browser | undefined;

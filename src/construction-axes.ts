@@ -1,18 +1,14 @@
 import * as THREE from 'three';
 import type { ConstructionAxis, Part, Project } from '../shared/types.ts';
 import { modelVisibility } from '../shared/model-tree.ts';
+import { axisComponentMatrix } from '../shared/assembly-motion.ts';
 
 /** Component references follow a shared rigid move, not an individually exploded child. */
 export function axisComponentTransform(axis: ConstructionAxis, parts: ReadonlyMap<string, Part>, meshes: ReadonlyMap<string, THREE.Mesh>): THREE.Matrix4 {
-  let common: THREE.Matrix4 | undefined;
-  for (const id of axis.partIds) {
-    const part = parts.get(id), mesh = meshes.get(id); if (!part || !mesh) continue;
-    const base = new THREE.Matrix4().compose(new THREE.Vector3(...part.home.position), new THREE.Quaternion(...part.home.quaternion), new THREE.Vector3(1, 1, 1));
-    const transform = mesh.matrixWorld.clone().multiply(base.invert());
-    if (common && common.elements.some((value, index) => Math.abs(value - transform.elements[index]) > 1e-6)) return new THREE.Matrix4();
-    common = transform;
-  }
-  return common ?? new THREE.Matrix4();
+  return axisComponentMatrix(axis, id => {
+    const part = parts.get(id), mesh = meshes.get(id);
+    return part && mesh ? { part, matrix: mesh.matrixWorld } : undefined;
+  });
 }
 
 interface AxisVisual { source: ConstructionAxis; group: THREE.Group; line: THREE.Line<THREE.BufferGeometry, THREE.LineDashedMaterial>; label: THREE.Sprite; texture: THREE.CanvasTexture }

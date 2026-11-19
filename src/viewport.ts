@@ -11,18 +11,23 @@ import { orbitDirection, viewDirections } from '../shared/navigation.ts';
 import { loadGeometries, surfaceAnchor, type PickSettings } from './geometry.ts';
 import { applySurfacePaint, type SurfacePaint } from './surface-paint.ts';
 import type { Anchor, AssemblyStep, Camera, DisplayMode, Keyframe, Note, NoteKind, Part, Pose, Project, Vec3 } from '../shared/types.ts';
-import { copy, explodedPoses, homePose, makeStep } from '../shared/document.ts';
+import { assembledPartIds, copy, DEFAULT_LABEL_OFFSET, explodedPoses, frameLabels, homePose, interpolateCamera, interpolateOffset, interpolatePose, makeStep } from '../shared/document.ts';
 import { browserRoots, modelVisibility } from '../shared/model-tree.ts';
-import { arrangeLabelBoxes, measureLabelBox } from '../shared/text-layout.ts';
+import { easeMotion, playbackFrame, type PlaybackSegment } from '../shared/playback.ts';
+import { arrangeLabelBoxes, measureLabelBox, type LabelLayoutBox } from '../shared/text-layout.ts';
 import { AnnotationOverlay } from './annotation-overlay.ts';
 import { icon } from './icons.ts';
+import { planLabelMotion, positionAnimatedLabel } from './label-motion.ts';
 import { ANNOTATION_LINE_WIDTH, PART_LABEL_LINE_COLOR, PART_LABEL_DOT_COLOR, PART_LABEL_DOT_RADIUS } from '../shared/render-style.ts';
+import { videoHeight, videoLayoutSize, videoWidth } from '../shared/video-format.ts';
 
 export type ViewTool = 'select' | 'move' | 'rotate' | 'measure' | 'align' | NoteKind;
 export interface SectionState { amount: number; normal: Vec3 }
 export type NameTarget = { kind: 'part'; id: string } | { kind: 'object'; id: string } | { kind: 'axis'; id: string } | { kind: 'group'; id: string; stepId: string };
 interface Callbacks {
   select(id: string, multiple: boolean, individual: boolean): void;
+  contextMenu?(id: string, event: PointerEvent): void;
+  dragHover?(target: Element | null): void;
   drop(ids: string[], x: number, y: number): void;
   pose(poses: Record<string, Pose>): void;
   anchors(anchors: Anchor[], kind: NoteKind): void;
@@ -37,7 +42,26 @@ interface Callbacks {
   clearSelection(): void;
   axis(id: string): void;
 }
-interface Label { element: HTMLElement; partId: string; point: Vec3; offset: [number, number]; color: string; background: string; text: string; id: string; isPart: boolean; x: number; y: number; world: THREE.Vector3; icon?: HTMLImageElement }
+interface LabelDefinition {
+  id: string; partId: string; point: Vec3; offset: readonly [number, number]; text: string; color: string; background: string;
+  fontSize: number; kind?: NoteKind; target?: NameTarget; groupParts?: string[];
+}
+interface Label extends LabelDefinition { element: HTMLButtonElement; offset: [number, number]; isPart: boolean; x: number; y: number; world: THREE.Vector3; icon?: HTMLImageElement }
+interface MeasuredLabel extends LabelDefinition { width: number; height: number }
+interface MotionPosition extends LabelLayoutBox { id: string; world: THREE.Vector3 }
+interface AnnotationViewport { width: number; height: number; fullWidth: number; insetX: number; scale: number }
+const videoAnnotationScale = videoHeight / videoLayoutSize.height;
+const videoAnnotationWidth = videoWidth / videoAnnotationScale;
+const videoAnnotations: AnnotationViewport = {
+  ...videoLayoutSize, fullWidth: videoAnnotationWidth, insetX: (videoAnnotationWidth - videoLayoutSize.width) / 2, scale: videoAnnotationScale,
+};
+function projectLabelAnchor(projected: THREE.Vector3, { fullWidth, height, insetX }: AnnotationViewport) {
+  return { anchorX: (projected.x + 1) * fullWidth / 2 - insetX, anchorY: (1 - projected.y) * height / 2 };
+}
+interface PlaybackLayout {
+  project: Project; segment: PlaybackSegment; projection: string; viewport: AnnotationViewport; fromCamera: Camera; toCamera: Camera;
+  labels?: { from: Map<string, MeasuredLabel>; to: Map<string, MeasuredLabel>; tracks?: ReturnType<typeof planLabelMotion> };
+}
 interface TransparentItem { object: THREE.Object3D; groupOrder: number; renderOrder: number; z: number; id: number }
 export class Viewport {
   readonly renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, preserveDrawingBuffer: true });
@@ -69,6 +93,12 @@ export class Viewport {
   private readonly labelsHost = document.createElement('div');
   private readonly leaderSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   private labels: Label[] = [];
+  private readonly labelContext = document.createElement('canvas').getContext('2d')!;
+  private playback?: { layout: PlaybackLayout; progress: number };
+  private playbackLayout?: PlaybackLayout;
+  private playbackBoxes?: Map<string, MotionPosition>;
+  private videoCapture = false;
+  private videoLabelMetrics?: WeakMap<HTMLButtonElement, ReturnType<Viewport['measureLabel']>>;
   private connectionIcons = new Map<NoteKind, HTMLImageElement>();
   private draggingLabel?: Label;
   private readonly annotationOverlay = new AnnotationOverlay();
@@ -80,6 +110,7 @@ export class Viewport {
   private cameraMargin = 1.25;
   private mode: DisplayMode = 'all';
   private drag?: { start: THREE.Vector2; ids: string[]; pointerId: number; moved: boolean };
+  private contextPress?: THREE.Vector2;
   private brush: Anchor[] = [];
   private pendingArrow?: Anchor;
   private alignmentStart?: Anchor;
@@ -115,6 +146,7 @@ export class Viewport {
     this.renderer.setTransparentSort((a: TransparentItem, b: TransparentItem) => a.groupOrder - b.groupOrder || a.renderOrder - b.renderOrder || (this.transparentDepth.get(a.object.id) ?? -a.z) - (this.transparentDepth.get(b.object.id) ?? -b.z) || a.id - b.id);
     this.renderer.domElement.setAttribute('aria-label', '3D assembly workspace'); host.append(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.enableDamping = true; this.controls.dampingFactor = .14;
+    this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.addEventListener('change', () => { this.dirty = true; });
     const navigatorHost = document.querySelector<HTMLElement>('.view-cube'); if (navigatorHost) this.navigator = new Navigator(navigatorHost, this.camera, direction => this.setDirection(direction), (dx, dy) => this.setDirection(orbitDirection(this.camera.position.clone().sub(this.controls.target).toArray(), dx, dy)));
     for (const [x, y, z, intensity] of [[-.4575, .4575, .7625, 2.6], [.6985, .1397, .6985, .85], [.1397, .6985, .6985, .85]]) {
@@ -138,9 +170,10 @@ export class Viewport {
     this.renderer.domElement.addEventListener('pointermove', event => this.pointerMove(event));
     this.renderer.domElement.addEventListener('pointerup', event => this.pointerUp(event));
     this.renderer.domElement.addEventListener('pointercancel', () => this.cancelPointer());
+    this.renderer.domElement.addEventListener('contextmenu', event => event.preventDefault());
     this.renderer.domElement.addEventListener('dblclick', event => { const hit = this.hit(event); this.fit(hit ? [String(hit.object.userData.partId)] : undefined); });
     this.thumbScene.background = new THREE.Color('#35363a'); this.thumbScene.add(new THREE.HemisphereLight(0xffffff, 0x50505a, 2.4)); const thumbLight = new THREE.DirectionalLight(0xffffff, 2.5); thumbLight.position.set(2, -3, 4); this.thumbScene.add(thumbLight); this.thumbCamera.up.set(0, 0, 1);
-    this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(host); this.resize(); this.animate();
+    this.observer = new ResizeObserver(() => { if (!this.videoCapture) this.resize(); }); this.observer.observe(host); this.resize(); this.animate();
   }
   async load(project: Project, isCurrent?: () => boolean): Promise<void> {
     this.paintCleanups.forEach(cleanup => cleanup()); this.paintCleanups = [];
@@ -151,7 +184,7 @@ export class Viewport {
     if (this.drag && this.renderer.domElement.hasPointerCapture(this.drag.pointerId)) this.renderer.domElement.releasePointerCapture(this.drag.pointerId);
     this.cancelPointer(); this.displayHidden.clear(); this.isolated.clear(); this.selected = []; this.outline.selectedObjects = [];
     this.brush = []; this.measurePoints = []; this.originals.clear(); this.draggingLabel = undefined; this.blankPointer = false;
-    this.step = undefined; this.frame = undefined; this.mode = 'all'; this.explosionRatio = 1; this.setTool('select'); this.disposeAnnotationObjects();
+    this.step = undefined; this.frame = undefined; this.playback = undefined; this.playbackLayout = undefined; this.mode = 'all'; this.explosionRatio = 1; this.setTool('select'); this.disposeAnnotationObjects();
     this.transform.detach(); this.meshes.forEach(mesh => { this.scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); }); this.meshes.clear(); this.geometries.clear(); this.thumbnailCache.clear(); this.thumbnailQueue = [];
     for (const part of project.model.parts) {
       const geometry = geometries.get(part.id)!; this.geometries.set(part.id, geometry);
@@ -162,29 +195,73 @@ export class Viewport {
     const bounds = new THREE.Box3(); this.meshes.forEach(mesh => { mesh.updateMatrixWorld(true); bounds.expandByObject(mesh); }); this.assemblyRadius = bounds.getSize(new THREE.Vector3()).length() / 2;
     this.project = project; this.labelsSignature = ''; this.dirty = true;
   }
-  show(project: Project, step?: AssemblyStep, frame?: Keyframe, mode: DisplayMode = 'all', explosion = 1): void {
+  show(project: Project, step?: AssemblyStep, frame?: Keyframe, mode: DisplayMode = 'all', explosion = 1, unassembledOnly = false): void {
+    this.playback = undefined;
     if (this.step?.id !== step?.id || this.frame?.id !== frame?.id) this.measurePoints = [];
     this.project = project; this.step = step; this.frame = frame; this.mode = mode;
     const visibility = modelVisibility(project);
     this.explosionRatio = explosion;
     const selectedIds = new Set(step?.partIds ?? []); const overview = !step; const overviewStep = overview && explosion > 1 ? makeStep(project, 'Overall preview', project.model.parts.filter(p => p.sourceStatus === 'active').map(p => p.id)) : undefined;
+    const frameXray = new Set(frame?.xrayPartIds);
     const expanded = overviewStep ? explodedPoses(project, overviewStep, explosion - 1, false) : undefined;
+    const assembled = overview && unassembledOnly ? assembledPartIds(project) : undefined;
     const finalStep = project.steps.find(s => s.final); const final = finalStep?.frames.at(-1);
     const earlierRemoved = new Set(step ? project.steps.slice(0, project.steps.indexOf(step)).flatMap(s => s.removePartIds) : []);
     for (const part of project.model.parts) {
       const mesh = this.meshes.get(part.id); if (!mesh) continue;
       const included = selectedIds.has(part.id); const removed = frame?.hidden.includes(part.id) ?? false;
       mesh.visible = (visibility.parts.get(part.id) ?? true) && !removed && !this.displayHidden.has(part.id) && (!this.isolated.size || this.isolated.has(part.id)) && (included || part.sourceStatus === 'active' && !earlierRemoved.has(part.id) && (overview || mode !== 'current'))
-        && !(overview && final?.hidden.includes(part.id));
+        && !(overview && final?.hidden.includes(part.id)) && !assembled?.has(part.id);
       const pose = expanded?.[part.id] ?? (included ? frame?.poses[part.id] : undefined) ?? (overview ? final?.poses[part.id] : undefined) ?? homePose(part);
       mesh.position.fromArray(pose.position); mesh.quaternion.fromArray(pose.quaternion); mesh.updateMatrixWorld(true);
-      const ghost = !!step && !included && mode === 'xray'; mesh.material.transparent = ghost; mesh.material.opacity = ghost ? .15 : 1; mesh.material.depthWrite = true;
+      const ghost = included ? frameXray.has(part.id) : !overview && mode === 'xray'; mesh.material.transparent = ghost; mesh.material.opacity = ghost ? .15 : 1; mesh.material.depthWrite = true;
       if (mesh.material.alphaToCoverage === ghost) { mesh.material.alphaToCoverage = !ghost; mesh.material.needsUpdate = true; }
       const side = ghost ? THREE.FrontSide : THREE.DoubleSide; if (mesh.material.side !== side) { mesh.material.side = side; mesh.material.needsUpdate = true; }
       mesh.material.color.set(this.selected.includes(part.id) ? '#e7dd69' : part.color); mesh.material.emissive.set(this.selected.includes(part.id) ? '#403809' : '#000000');
       mesh.renderOrder = ghost ? 1 : 0;
     }
     this.axes.visible = project.settings.showAxes; this.refreshAnnotations(); this.attachTransform(); this.updateSectionPlane(); this.dirty = true;
+  }
+  showPlayback(project: Project, segment: PlaybackSegment, progress: number, mode: DisplayMode, explosion = 1): void {
+    const layout = this.getPlaybackLayout(project, segment);
+    this.show(project, segment.step, playbackFrame(segment, progress, project.settings), mode, explosion);
+    this.playback = { layout, progress };
+    this.setPlaybackCamera(layout, progress);
+  }
+  private getPlaybackLayout(project: Project, segment: PlaybackSegment): PlaybackLayout {
+    const viewport = this.annotationViewport, { from, to, step } = segment;
+    const projection = [0, 5, 8, 9].map(index => this.camera.projectionMatrix.elements[index]).join(',');
+    let layout = this.playbackLayout;
+    if (!layout || layout.project !== project || layout.segment.step !== step || layout.segment.from !== from || layout.segment.to !== to ||
+      layout.viewport.width !== viewport.width || layout.viewport.height !== viewport.height || layout.viewport.scale !== viewport.scale || layout.projection !== projection) {
+      const fallback = from.camera && to.camera ? from.camera : step.frames.find(frame => frame.camera)?.camera ?? this.fitPlaybackCamera(project, step);
+      layout = { project, segment, viewport, projection, fromCamera: from.camera ?? fallback, toCamera: to.camera ?? fallback };
+      this.playbackLayout = layout;
+    }
+    return layout;
+  }
+  private setPlaybackCamera(layout: PlaybackLayout, progress: number): void {
+    const camera = interpolateCamera(layout.fromCamera, layout.toCamera, easeMotion(progress));
+    const damping = this.controls.enableDamping; this.controls.enableDamping = false;
+    this.controls.update(); this.setCamera(camera); this.controls.enableDamping = damping;
+  }
+  private fitPlaybackCamera(project: Project, step: AssemblyStep): Camera {
+    const bounds = new THREE.Box3(), matrix = new THREE.Matrix4(), origin = new THREE.Vector3(), rotation = new THREE.Quaternion(), scale = new THREE.Vector3(1, 1, 1);
+    const box = new THREE.Box3();
+    for (const part of project.model.parts) {
+      if (!step.partIds.includes(part.id)) continue;
+      const geometry = this.meshes.get(part.id)?.geometry.boundingBox;
+      if (!geometry) continue;
+      for (const frame of step.frames) {
+        const pose = frame.poses[part.id] ?? homePose(part);
+        matrix.compose(origin.fromArray(pose.position), rotation.fromArray(pose.quaternion), scale);
+        bounds.union(box.copy(geometry).applyMatrix4(matrix));
+      }
+    }
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere()), margin = 1.2;
+    const halfFov = THREE.MathUtils.degToRad(this.camera.fov / 2), limitingFov = Math.atan(Math.tan(halfFov) * Math.min(1, this.camera.aspect));
+    const eye = new THREE.Vector3(...viewDirections.iso).normalize().multiplyScalar(Math.max(1, sphere.radius * margin / Math.sin(limitingFov))).add(sphere.center);
+    return { eye: eye.toArray(), target: sphere.center.toArray(), up: [0, 0, 1], margin };
   }
   select(ids: string[]): void {
     this.constructionAxes.select();
@@ -253,8 +330,8 @@ export class Viewport {
     const bounds = new THREE.Box3(); this.meshes.forEach(mesh => { if (mesh.visible) bounds.expandByObject(mesh); });
     this.clip.constant = -this.clip.normal.dot(bounds.getCenter(new THREE.Vector3())) + this.assemblyRadius * this.explosionRatio * (1 - 2 * this.sectionAmount);
   }
-  setVisibility(ids: string[], visible: boolean): void { ids.forEach(id => visible ? this.displayHidden.delete(id) : this.displayHidden.add(id)); }
-  isolate(ids: string[]): void { this.isolated = new Set(ids); }
+  setVisibility(ids: string[], visible: boolean): void { ids.forEach(id => visible ? this.displayHidden.delete(id) : this.displayHidden.add(id)); this.playbackLayout = undefined; }
+  isolate(ids: string[]): void { this.isolated = new Set(ids); this.playbackLayout = undefined; }
   private hits(event: PointerEvent | MouseEvent): THREE.Intersection[] {
     const rect = this.renderer.domElement.getBoundingClientRect(); this.raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
     const hits = this.raycaster.intersectObjects([...this.meshes.values()].filter(mesh => mesh.visible), false);
@@ -287,6 +364,10 @@ export class Viewport {
     return closest && this.noteTargets.get(closest.object);
   }
   private pointerDown(event: PointerEvent): void {
+    if (event.button === 2) {
+      this.contextPress = this.tool === 'select' ? new THREE.Vector2(event.clientX, event.clientY) : undefined;
+      return;
+    }
     if (event.button !== 0 || this.transform.axis) return; this.canvasPointer.set(event.clientX, event.clientY); this.blankPointer = false;
     if (this.tool === 'select') {
       const noteId = !event.altKey && this.hitNote(event);
@@ -312,10 +393,28 @@ export class Viewport {
   }
   private sampleBrush(event: PointerEvent): void { const anchor = this.anchor(event, this.tool === 'glue'); if (!anchor) return; const last = this.brush.at(-1); if (!last || last.partId !== anchor.partId || new THREE.Vector3(...last.point).distanceTo(new THREE.Vector3(...anchor.point)) > Math.max(.3, this.pickSettings.radius / 3)) this.brush.push(anchor); }
   private pointerMove(event: PointerEvent): void {
-    if (this.drag) { if (this.drag.start.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 6) this.drag.moved = true; if (this.drag.moved) { this.ghost.hidden = false; this.ghost.textContent = `${this.drag.ids.length} part${this.drag.ids.length === 1 ? '' : 's'} → step`; this.ghost.style.transform = `translate(${event.clientX + 16}px,${event.clientY + 14}px)`; document.querySelectorAll('.step-drop').forEach(el => { const rect = el.getBoundingClientRect(); el.classList.toggle('drop-active', event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom); }); } return; }
+    if (this.contextPress && this.contextPress.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5) this.contextPress = undefined;
+    if (this.drag) {
+      if (this.drag.start.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 6) this.drag.moved = true;
+      if (this.drag.moved) {
+        this.ghost.hidden = false;
+        this.ghost.textContent = `${this.drag.ids.length} part${this.drag.ids.length === 1 ? '' : 's'} → step`;
+        this.ghost.style.transform = `translate(${event.clientX + 16}px,${event.clientY + 14}px)`;
+        this.callbacks.dragHover?.(document.elementFromPoint(event.clientX, event.clientY));
+      }
+      return;
+    }
     if (event.buttons === 1 && (this.tool === 'pencil' || this.tool === 'glue' && this.pickSettings.region === 'brush')) this.sampleBrush(event);
   }
   private pointerUp(event: PointerEvent): void {
+    if (event.button === 2) {
+      const start = this.contextPress;
+      this.contextPress = undefined;
+      if (!start || this.tool !== 'select' || start.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5 || document.elementFromPoint(event.clientX, event.clientY) !== this.renderer.domElement) return;
+      const hit = this.hit(event);
+      if (hit) this.callbacks.contextMenu?.(String(hit.object.userData.partId), event);
+      return;
+    }
     if (event.button !== 0) return;
     if (this.drag) { const drag = this.drag; this.cancelPointer(); if (drag.moved) this.callbacks.drop(drag.ids, event.clientX, event.clientY); return; }
     this.controls.enabled = true;
@@ -328,16 +427,52 @@ export class Viewport {
     if (this.tool === 'arrow') { if (!this.pendingArrow) { this.pendingArrow = anchor; this.callbacks.status('Choose the arrow end point on a 3D part.'); return; } this.callbacks.anchors([this.pendingArrow, anchor], 'arrow'); this.pendingArrow = undefined; return; }
     this.callbacks.anchors([anchor], this.tool as NoteKind);
   }
-  private cancelPointer(): void { this.drag = undefined; this.ghost.hidden = true; this.controls.enabled = true; document.querySelectorAll('.drop-active').forEach(el => el.classList.remove('drop-active')); }
+  private cancelPointer(): void {
+    this.drag = undefined;
+    this.contextPress = undefined;
+    this.ghost.hidden = true;
+    this.controls.enabled = true;
+    this.callbacks.dragHover?.(null);
+  }
   private disposeAnnotationObjects(): void { this.annotationRoot.traverse(object => { if (object instanceof THREE.Mesh || object instanceof THREE.Line) { object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach(material => material.dispose()); } }); this.annotationRoot.clear(); this.labelsHost.replaceChildren(); this.labels = []; this.annotationOverlay.clear(); this.noteTargets.clear(); }
-  private refreshAnnotations(): void {
-    if (!this.project) return; const notes = this.frame?.notes ?? []; const settings = { ...this.project.settings, ...this.frame?.labels };
+  private describeLabels(project: Project, step?: AssemblyStep, frame?: Keyframe): LabelDefinition[] {
+    const settings = frameLabels(project, frame), fontSize = settings.labelFontSize;
+    const labels: LabelDefinition[] = [];
+    for (const note of frame?.notes ?? []) {
+      const first = note.anchors[0];
+      if (!first || note.hidden || !(note.text || ['clip', 'glue', 'screw', 'remove', 'text'].includes(note.kind))) continue;
+      labels.push({ id: note.id, partId: first.partId, point: first.point, text: note.text || note.kind, offset: note.offset, color: note.color, background: note.background, kind: note.kind, fontSize });
+    }
+    if (!settings.showLabels || !step) return labels;
     const objects = new Map<string, { id: string; name: string }>();
     const collectObjects = (nodes: ReturnType<typeof browserRoots>): void => { for (const node of nodes) { if (node.kind === 'object') { if (node.occurrenceToken) objects.set(node.occurrenceToken, node); if (node.componentPath) objects.set(node.componentPath, node); } if (node.children) collectObjects(node.children); } };
-    if (settings.labelMode === 'object') collectObjects(browserRoots(this.project.model));
-    const names = this.project.model.parts.filter(part => this.step?.partIds.includes(part.id)).map(part => [part.id, part.name]);
-    const signature = JSON.stringify([notes, settings.showLabels, settings.labelMode, settings.labelFontSize, settings.labelOffsets, settings.hiddenLabels, this.step?.partIds, names, [...objects.values()].map(object => [object.id, object.name]), this.step?.groups.map(group => [group.id, group.name])]);
-    if (signature === this.labelsSignature) return; this.labelsSignature = signature; this.disposeAnnotationObjects();
+    if (settings.labelMode === 'object') collectObjects(browserRoots(project.model));
+    const seenObjects = new Set<string>(), labeledGroups = new Set<string>();
+    for (const part of project.model.parts) {
+      if (!step.partIds.includes(part.id) || settings.hiddenLabels.includes(part.id)) continue;
+      const group = settings.labelMode === 'auto' ? step.groups.find(item => item.partIds.includes(part.id)) : undefined;
+      const common = { partId: part.id, point: [0, 0, 0] as Vec3, color: PART_LABEL_LINE_COLOR, background: '#333438', fontSize };
+      if (group) {
+        if (labeledGroups.has(group.id)) continue; labeledGroups.add(group.id);
+        labels.push({ ...common, id: group.id, groupParts: group.partIds, text: group.name, offset: settings.labelOffsets[group.id] ?? DEFAULT_LABEL_OFFSET, target: { kind: 'group', id: group.id, stepId: step.id } });
+        continue;
+      }
+      if (settings.labelMode === 'object' && seenObjects.has(part.objectId)) continue; seenObjects.add(part.objectId);
+      const object = settings.labelMode === 'object' ? objects.get(part.occurrenceToken ?? '') ?? objects.get(part.objectName) : undefined;
+      const target: NameTarget = object ? { kind: 'object', id: object.id } : { kind: 'part', id: part.id };
+      labels.push({ ...common, id: part.id, text: object?.name ?? (settings.labelMode === 'object' ? part.objectName : part.name), offset: settings.labelOffsets[part.id] ?? DEFAULT_LABEL_OFFSET, target });
+    }
+    return labels;
+  }
+  private refreshAnnotations(): void {
+    if (!this.project) return;
+    const notes = this.frame?.notes ?? [], definitions = this.describeLabels(this.project, this.step, this.frame);
+    const signature = JSON.stringify([notes.map(({ offset, ...note }) => note), definitions.map(({ offset, ...label }) => label)]);
+    if (signature === this.labelsSignature) {
+      definitions.forEach((definition, index) => { if (this.labels[index] !== this.draggingLabel) this.labels[index].offset = [...definition.offset]; });
+      return;
+    }
+    this.labelsSignature = signature; this.disposeAnnotationObjects(); this.draggingLabel = undefined;
     this.paintCleanups.forEach(cleanup => cleanup()); this.paintCleanups = [];
     const surfacePaint = new Map<string, SurfacePaint[]>();
     for (const note of notes) {
@@ -364,34 +499,22 @@ export class Viewport {
           this.annotationRoot.add(mark); this.noteTargets.set(mark, note.id);
         }
       }
-      const first = note.anchors[0]; if (first && (note.text || ['clip', 'glue', 'screw', 'remove', 'text'].includes(note.kind))) this.addLabel(note.id, first.partId, first.point, note.text || note.kind, note.offset, note.color, note.background, false, note.kind);
     }
     surfacePaint.forEach((areas, id) => { const mesh = this.meshes.get(id); if (mesh) this.paintCleanups.push(applySurfacePaint(mesh, areas)); });
-    if (settings.showLabels && this.step) {
-      const seenObjects = new Set<string>(); const labeledGroups = new Set<string>();
-      for (const part of this.project.model.parts.filter(p => !this.step || this.step.partIds.includes(p.id))) {
-        if (settings.hiddenLabels.includes(part.id)) continue;
-        const group = settings.labelMode === 'auto' ? this.step?.groups.find(g => g.partIds.includes(part.id)) : undefined;
-        if (group) {
-          if (labeledGroups.has(group.id)) continue; labeledGroups.add(group.id);
-          const center = new THREE.Vector3(); group.partIds.forEach(id => center.add(this.meshes.get(id)!.position)); center.divideScalar(group.partIds.length); this.meshes.get(part.id)!.worldToLocal(center);
-          this.addLabel(group.id, part.id, center.toArray(), group.name, settings.labelOffsets[group.id] ?? [20, -30], '#eeeeee', '#333438', true, undefined, { kind: 'group', id: group.id, stepId: this.step.id }); continue;
-        }
-        if (settings.labelMode === 'object' && seenObjects.has(part.objectId)) continue; seenObjects.add(part.objectId);
-        const object = settings.labelMode === 'object' ? objects.get(part.occurrenceToken ?? '') ?? objects.get(part.objectName) : undefined;
-        const target: NameTarget = object ? { kind: 'object', id: object.id } : { kind: 'part', id: part.id };
-        this.addLabel(part.id, part.id, [0, 0, 0], object?.name ?? (settings.labelMode === 'object' ? part.objectName : part.name), settings.labelOffsets[part.id] ?? [20, -30], '#eeeeee', '#333438', true, undefined, target);
-      }
-    }
+    definitions.forEach(definition => this.addLabel(definition));
   }
-  private addLabel(id: string, partId: string, point: Vec3, text: string, offset: [number, number], color: string, background: string, isPart: boolean, kind?: NoteKind, nameTarget?: NameTarget): void {
-    const element = document.createElement('button'); element.type = 'button'; element.className = isPart ? 'part-label' : 'surface-note'; element.textContent = text; element.dataset.noteId = id; element.style.color = isPart ? color : '#f2f2f2'; element.style.background = background;
-    const fontSize = this.frame?.labels?.labelFontSize ?? this.project?.settings.labelFontSize ?? 13; element.style.fontSize = `${fontSize}px`;
+  private labelElement({ id, text, background, fontSize, kind, target }: LabelDefinition): HTMLButtonElement {
+    const element = document.createElement('button'); element.type = 'button'; element.className = target ? 'part-label' : 'surface-note'; element.textContent = text; element.dataset.noteId = id; element.style.color = target ? '#eeeeee' : '#f2f2f2'; element.style.background = background;
+    element.style.fontSize = `${fontSize}px`;
     const icon = kind ? this.connectionIcons.get(kind) : undefined;
     if (icon) { const display = new Image(); display.src = icon.src; display.alt = ''; display.draggable = false; Object.assign(display.style, { position: 'absolute', left: '7px', top: '4px', width: `${fontSize}px`, height: `${fontSize}px` }); element.style.paddingLeft = `${fontSize + 14}px`; element.prepend(display); }
-    this.labelsHost.append(element);
-    if (nameTarget) { element.dataset.nameKind = nameTarget.kind; element.dataset.nameId = nameTarget.id; }
-    const label: Label = { element, partId, point, text, offset: [...offset], color: isPart ? PART_LABEL_LINE_COLOR : color, background, id, isPart, x: 0, y: 0, world: new THREE.Vector3(), icon }; this.labels.push(label);
+    if (target) { element.dataset.nameKind = target.kind; element.dataset.nameId = target.id; }
+    return element;
+  }
+  private addLabel(definition: LabelDefinition): void {
+    const { id, partId, target: nameTarget, kind } = definition, isPart = !!nameTarget;
+    const element = this.labelElement(definition); this.labelsHost.append(element);
+    const label: Label = { ...definition, element, offset: [...definition.offset], isPart, x: 0, y: 0, world: new THREE.Vector3(), icon: kind ? this.connectionIcons.get(kind) : undefined }; this.labels.push(label);
     let start: [number, number] | undefined; let original: [number, number] = [0, 0], authoredOffset: [number, number] = [...label.offset]; let moved = false;
     element.onpointerdown = event => { event.stopPropagation(); if (event.button !== 0) { if (event.button === 1) event.preventDefault(); return; } const projected = label.world.clone().project(this.camera); start = [event.clientX, event.clientY]; authoredOffset = [...label.offset]; original = [label.x - (projected.x + 1) * this.host.clientWidth / 2, label.y - (1 - projected.y) * this.host.clientHeight / 2]; moved = false; element.setPointerCapture(event.pointerId); };
     element.onpointermove = event => { if (!start) return; const dx = event.clientX - start[0], dy = event.clientY - start[1]; if (Math.hypot(dx, dy) > 3) moved = true; if (!moved) return; this.draggingLabel = label; label.offset = [original[0] + dx, original[1] + dy]; this.dirty = true; };
@@ -401,25 +524,110 @@ export class Viewport {
     element.onauxclick = event => { if (event.button === 1 && nameTarget) { event.preventDefault(); event.stopPropagation(); this.callbacks.focusName(nameTarget); } };
     element.oncontextmenu = event => { if (isPart) { event.preventDefault(); event.stopPropagation(); this.callbacks.copyName(label.text); } };
   }
+  private measureLabel(element: HTMLElement, text: string, width: number) {
+    const context = this.labelContext, computed = getComputedStyle(element);
+    const font = `${computed.fontStyle} ${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`; context.font = font;
+    const fontSize = parseFloat(computed.fontSize), lineHeight = parseFloat(computed.lineHeight) || fontSize * 1.2;
+    const insets = { left: parseFloat(computed.paddingLeft) + parseFloat(computed.borderLeftWidth), right: parseFloat(computed.paddingRight) + parseFloat(computed.borderRightWidth), top: parseFloat(computed.paddingTop) + parseFloat(computed.borderTopWidth), bottom: parseFloat(computed.paddingBottom) + parseFloat(computed.borderBottomWidth) };
+    const box = measureLabelBox(text, Math.min(420, width - 24), lineHeight, insets, value => context.measureText(value).width);
+    const metrics = context.measureText('Mg');
+    const { backgroundColor, borderColor, borderRadius, borderWidth, color } = computed;
+    const style = { backgroundColor, borderColor, borderRadius, borderWidth, color };
+    return { ...box, style, font, fontSize, lineHeight, insets, ascent: metrics.fontBoundingBoxAscent || fontSize * .8, descent: metrics.fontBoundingBoxDescent || fontSize * .2 };
+  }
+  private labelPoint(label: LabelDefinition, matrixFor: (partId: string) => THREE.Matrix4): THREE.Vector3 {
+    if (!label.groupParts) return new THREE.Vector3(...label.point).applyMatrix4(matrixFor(label.partId));
+    const center = new THREE.Vector3(), point = new THREE.Vector3();
+    for (const id of label.groupParts) center.add(point.setFromMatrixPosition(matrixFor(id)));
+    return center.divideScalar(label.groupParts.length);
+  }
+  private projectedLabels(layout: PlaybackLayout, progress: number, camera: THREE.PerspectiveCamera, matrixFor: (partId: string) => THREE.Matrix4, visible: (partId: string) => boolean): MotionPosition[] {
+    const { from, to } = layout.labels!;
+    const t = easeMotion(progress), firstHalf = t < .5, current = firstHalf ? from : to, other = firstHalf ? to : from;
+    const positions: MotionPosition[] = [];
+    for (const label of current.values()) {
+      if (!visible(label.partId)) continue;
+      const pair = other.get(label.id), world = this.labelPoint(label, matrixFor);
+      let offset = label.offset;
+      if (pair && visible(pair.partId)) {
+        const blend = firstHalf ? t : 1 - t;
+        world.lerp(this.labelPoint(pair, matrixFor), blend);
+        offset = interpolateOffset(label.offset, pair.offset, blend);
+      }
+      if (world.clone().applyMatrix4(camera.matrixWorldInverse).z >= 0) continue;
+      const { anchorX, anchorY } = projectLabelAnchor(world.clone().project(camera), layout.viewport);
+      positions.push({ id: label.id, world, width: label.width, height: label.height, anchorX, anchorY, x: anchorX + offset[0], y: anchorY + offset[1] });
+    }
+    return positions;
+  }
+  private preparePlaybackLabels(layout: PlaybackLayout): void {
+    const { project, segment: { step, from, to, duration }, viewport: { width, height } } = layout;
+    const measure = (frame: Keyframe): Map<string, MeasuredLabel> => new Map(this.describeLabels(project, step, frame).map(label => {
+      const element = this.labelElement(label); element.style.visibility = 'hidden'; this.labelsHost.append(element);
+      const { width: labelWidth, height: labelHeight } = this.measureLabel(element, label.text, width); element.remove();
+      return [label.id, { ...label, width: labelWidth, height: labelHeight }];
+    }));
+    const first = measure(from);
+    const labels = { from: first, to: from === to ? first : measure(to) };
+    layout.labels = labels;
+    if (from === to || (!labels.from.size && !labels.to.size)) return;
+    const visibility = modelVisibility(project).parts, parts = new Map(project.model.parts.map(part => [part.id, part]));
+    const camera = this.camera.clone(), position = new THREE.Vector3(), rotation = new THREE.Quaternion(), scale = new THREE.Vector3(1, 1, 1);
+    const hiddenAtStart = new Set(from.hidden), hiddenAtEnd = new Set(to.hidden);
+    layout.labels.tracks = planLabelMotion(duration, width, height, progress => {
+      const t = easeMotion(progress), state = interpolateCamera(layout.fromCamera, layout.toCamera, t);
+      camera.position.fromArray(state.eye); camera.up.fromArray(state.up); camera.lookAt(position.fromArray(state.target)); camera.updateMatrixWorld();
+      const matrices = new Map<string, THREE.Matrix4>(), hidden = t < .999 ? hiddenAtStart : hiddenAtEnd;
+      const matrixFor = (id: string): THREE.Matrix4 => {
+        const cached = matrices.get(id); if (cached) return cached;
+        const part = parts.get(id)!, end = to.poses[id], start = from.poses[id] ?? end;
+        const pose = t === 0 ? from.poses[id] ?? homePose(part) : start && end ? interpolatePose(start, end, t) : homePose(part);
+        const matrix = new THREE.Matrix4().compose(position.fromArray(pose.position), rotation.fromArray(pose.quaternion), scale);
+        matrices.set(id, matrix); return matrix;
+      };
+      return this.projectedLabels(layout, progress, camera, matrixFor, id => (visibility.get(id) ?? true) && !hidden.has(id) && !this.displayHidden.has(id) && (!this.isolated.size || this.isolated.has(id)));
+    });
+  }
+  private animatedLabelBoxes(layout: PlaybackLayout, progress: number): Map<string, MotionPosition> {
+    if (!layout.labels) this.preparePlaybackLabels(layout);
+    const preferred = this.projectedLabels(layout, progress, this.camera, id => this.meshes.get(id)!.matrixWorld, id => !!this.meshes.get(id)?.visible);
+    const tracks = layout.labels?.tracks, { width, height } = layout.viewport;
+    const boxes = tracks ? preferred.map(box => positionAnimatedLabel(box, tracks.get(box.id), progress, width, height))
+      : arrangeLabelBoxes(preferred, width, height);
+    return new Map(boxes.map(box => [box.id, box]));
+  }
   private updateAnnotations(): void {
-    if (this.project) this.constructionAxes.update(this.project, this.meshes, this.camera, this.host.clientHeight);
+    const viewport = this.annotationViewport, { width, height, fullWidth, insetX } = viewport;
+    if (this.project) this.constructionAxes.update(this.project, this.meshes, this.camera, height);
     for (const child of this.annotationRoot.children) { const id: unknown = child.userData.partId; if (typeof id !== 'string') continue; const mesh = this.meshes.get(id); if (!mesh) continue; child.position.copy(mesh.position); child.quaternion.copy(mesh.quaternion); child.visible = mesh.visible; }
-    const width = this.host.clientWidth, height = this.host.clientHeight; this.leaderSvg.setAttribute('viewBox', `0 0 ${width} ${height}`); this.leaderSvg.replaceChildren();
-    this.annotationOverlay.update(this.frame?.notes ?? [], this.camera, width, height, anchor => {
+    this.leaderSvg.setAttribute('viewBox', `${-insetX} 0 ${fullWidth} ${height}`); this.leaderSvg.replaceChildren();
+    this.annotationOverlay.update(this.frame?.notes ?? [], this.camera, fullWidth, height, anchor => {
       const result = this.worldAnchor(anchor);
       return { point: result.point, visible: result.visible && (!this.sectionActive || this.clip.distanceToPoint(result.point) >= 0) };
     });
+    const playback = this.draggingLabel ? undefined : this.playback;
+    this.playbackBoxes = playback ? this.animatedLabelBoxes(playback.layout, playback.progress) : undefined;
     const positions: { label: Label; x: number; y: number; width: number; height: number; anchorX: number; anchorY: number }[] = [];
     for (const label of this.labels) {
-      const mesh = this.meshes.get(label.partId); if (!mesh) continue; label.world.copy(new THREE.Vector3(...label.point).applyMatrix4(mesh.matrixWorld)); const projected = label.world.clone().project(this.camera);
+      const mesh = this.meshes.get(label.partId); if (!mesh) continue;
+      const animated = this.playbackBoxes?.get(label.id);
+      label.world.copy(animated?.world ?? this.labelPoint(label, id => this.meshes.get(id)!.matrixWorld)); const projected = label.world.clone().project(this.camera);
       const visible = mesh.visible && projected.z >= -1 && projected.z <= 1 && (!this.sectionActive || this.clip.distanceToPoint(label.world) >= 0); label.element.hidden = !visible; if (!visible) continue;
-      const x = (projected.x + 1) * width / 2, y = (1 - projected.y) * height / 2;
+      if (animated) {
+        Object.assign(label.element.style, { width: `${animated.width}px`, maxWidth: 'none', height: `${animated.height}px` });
+        positions.push({ ...animated, label }); continue;
+      }
+      Object.assign(label.element.style, { width: '', maxWidth: '', height: '' });
+      const { anchorX, anchorY } = projectLabelAnchor(projected, viewport);
       const keepPosition = this.draggingLabel && this.draggingLabel !== label;
-      positions.push({ label, x: keepPosition ? label.x : x + label.offset[0], y: keepPosition ? label.y : y + label.offset[1], width: label.element.offsetWidth, height: label.element.offsetHeight, anchorX: x, anchorY: y });
+      positions.push({ label, x: keepPosition ? label.x : anchorX + label.offset[0], y: keepPosition ? label.y : anchorY + label.offset[1], width: label.element.offsetWidth, height: label.element.offsetHeight, anchorX, anchorY });
     }
-    const host = this.host.getBoundingClientRect();
-    const obstacles = [...document.querySelectorAll<HTMLElement>('.left-panel,.right-stack,.viewport-tools,.bottom-controls,.playbar')].filter(element => !element.hidden && element.offsetWidth && element.offsetHeight).map(element => { const rect = element.getBoundingClientRect(); return { x: rect.left - host.left, y: rect.top - host.top, width: rect.width, height: rect.height }; });
-    const arranged = this.draggingLabel ? positions : arrangeLabelBoxes(positions.sort((a, b) => Number(a.label.isPart) - Number(b.label.isPart)), width, height, obstacles);
+    let arranged = positions;
+    if (!this.draggingLabel && !playback) {
+      const host = this.host.getBoundingClientRect();
+      const obstacles = [...document.querySelectorAll<HTMLElement>('.left-panel,.right-stack,.viewport-tools,.bottom-controls,.playbar')].filter(element => !element.hidden && element.offsetWidth && element.offsetHeight).map(element => { const rect = element.getBoundingClientRect(); return { x: rect.left - host.left, y: rect.top - host.top, width: rect.width, height: rect.height }; });
+      arranged = arrangeLabelBoxes(positions.sort((a, b) => Number(a.label.isPart) - Number(b.label.isPart)), width, height, obstacles);
+    }
     for (const box of arranged) {
       const { label } = box; label.x = box.x; label.y = box.y; label.element.style.transform = `translate(${box.x}px,${box.y}px)`;
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line'); line.setAttribute('x1', String(box.anchorX)); line.setAttribute('y1', String(box.anchorY)); line.setAttribute('x2', String(Math.max(box.x, Math.min(box.x + box.width, box.anchorX)))); line.setAttribute('y2', String(Math.max(box.y, Math.min(box.y + box.height, box.anchorY)))); line.setAttribute('stroke', label.color); line.setAttribute('stroke-width', String(ANNOTATION_LINE_WIDTH)); this.leaderSvg.append(line);
@@ -456,21 +664,64 @@ export class Viewport {
     this.thumbScene.remove(preview); preview.material.dispose(); renderer.setScissorTest(false); renderer.setViewport(0, 0, width, height); this.thumbBusy = false; this.dirty = true;
   }
   async prepareCapture(): Promise<void> { await document.fonts.ready; await Promise.all([...this.connectionIcons.values()].map(image => image.decode())); }
-  capture(): HTMLCanvasElement {
-    this.scene.updateMatrixWorld(true); this.updateDepthRange(); this.updateAnnotations(); this.renderScene();
-    const canvas = document.createElement('canvas'); canvas.width = this.renderer.domElement.width; canvas.height = this.renderer.domElement.height;
-    const context = canvas.getContext('2d')!; context.drawImage(this.renderer.domElement, 0, 0); context.scale(this.renderer.getPixelRatio(), this.renderer.getPixelRatio());
-    this.annotationOverlay.draw(context);
-    const width = this.host.clientWidth, height = this.host.clientHeight;
-    const measured = this.labels.filter(label => !label.element.hidden).sort((a, b) => Number(a.isPart) - Number(b.isPart)).map(label => {
-      const style = getComputedStyle(label.element), font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`; context.font = font;
-      const fontSize = parseFloat(style.fontSize), lineHeight = parseFloat(style.lineHeight) || fontSize * 1.2;
-      const insets = { left: parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth), right: parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth), top: parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth), bottom: parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth) };
-      const box = measureLabelBox(label.text, Math.min(420, width - 24), lineHeight, insets, text => context.measureText(text).width);
-      const projected = label.world.clone().project(this.camera), metrics = context.measureText('Mg'), anchorX = (projected.x + 1) * width / 2, anchorY = (1 - projected.y) * height / 2;
-      return { ...box, label, style, font, fontSize, lineHeight, insets, ascent: metrics.fontBoundingBoxAscent || fontSize * .8, descent: metrics.fontBoundingBoxDescent || fontSize * .2, x: anchorX + label.offset[0], y: anchorY + label.offset[1], anchorX, anchorY };
+  private get renderSize(): { width: number; height: number } {
+    return this.videoCapture ? { width: videoWidth, height: videoHeight } : { width: this.host.clientWidth, height: this.host.clientHeight };
+  }
+  private get annotationViewport(): AnnotationViewport {
+    if (this.videoCapture) return videoAnnotations;
+    const { width, height } = this.renderSize;
+    return { width, height, fullWidth: width, insetX: 0, scale: 1 };
+  }
+  async withVideoSize<T>(draw: () => Promise<T>): Promise<T> {
+    const ratio = this.renderer.getPixelRatio();
+    this.videoCapture = true;
+    this.videoLabelMetrics = new WeakMap();
+    try {
+      this.renderer.setPixelRatio(1); this.composer.setPixelRatio(1); this.resize();
+      return await draw();
+    } finally {
+      this.videoCapture = false;
+      this.videoLabelMetrics = undefined;
+      this.renderer.setPixelRatio(ratio); this.composer.setPixelRatio(ratio); this.resize();
+    }
+  }
+  labelLayout() {
+    this.scene.updateMatrixWorld(true); this.updateDepthRange(); this.updateAnnotations();
+    const { insetX, scale } = this.annotationViewport;
+    const labels = this.labels.flatMap(label => {
+      const box = this.playbackBoxes?.get(label.id);
+      if (!box || label.element.hidden) return [];
+      const { x, y, width, height, anchorX, anchorY } = box;
+      return [{ id: label.id, text: label.text, kind: label.target?.kind ?? 'note', partId: label.partId,
+        x: (x + insetX) * scale, y: y * scale, width: width * scale, height: height * scale,
+        anchorX: (anchorX + insetX) * scale, anchorY: anchorY * scale }];
     });
-    const layouts = arrangeLabelBoxes(measured, width, height);
+    return { ...this.renderSize, labels };
+  }
+  capture(): HTMLCanvasElement {
+    const canvas = document.createElement('canvas'); canvas.width = this.renderer.domElement.width; canvas.height = this.renderer.domElement.height;
+    this.drawCapture(canvas.getContext('2d')!);
+    return canvas;
+  }
+  drawCapture(context: CanvasRenderingContext2D): void {
+    this.scene.updateMatrixWorld(true); this.updateDepthRange(); this.updateAnnotations(); this.renderScene();
+    const viewport = this.annotationViewport, { width, height, insetX, scale } = viewport;
+    const pixelScale = this.renderer.getPixelRatio() * scale;
+    context.save(); context.resetTransform(); context.drawImage(this.renderer.domElement, 0, 0); context.scale(pixelScale, pixelScale);
+    this.annotationOverlay.draw(context);
+    context.translate(insetX, 0);
+    const measured = this.labels.filter(label => !label.element.hidden).sort((a, b) => Number(a.isPart) - Number(b.isPart)).map(label => {
+      let box = this.videoLabelMetrics?.get(label.element);
+      if (!box) {
+        box = this.measureLabel(label.element, label.text, width);
+        this.videoLabelMetrics?.set(label.element, box);
+      }
+      const animated = this.playbackBoxes?.get(label.id);
+      if (animated) return { ...box, ...animated, label };
+      const { anchorX, anchorY } = projectLabelAnchor(label.world.clone().project(this.camera), viewport);
+      return { ...box, label, x: anchorX + label.offset[0], y: anchorY + label.offset[1], anchorX, anchorY };
+    });
+    const layouts = this.playbackBoxes ? measured : arrangeLabelBoxes(measured, width, height);
     for (const box of layouts) {
       context.lineWidth = ANNOTATION_LINE_WIDTH; context.strokeStyle = box.label.color; context.beginPath(); context.moveTo(box.anchorX, box.anchorY);
       context.lineTo(Math.max(box.x, Math.min(box.x + box.width, box.anchorX)), Math.max(box.y, Math.min(box.y + box.height, box.anchorY))); context.stroke();
@@ -483,9 +734,10 @@ export class Viewport {
       context.fillStyle = style.color; context.font = box.font; context.textBaseline = 'alphabetic';
       box.lines.forEach((line, index) => context.fillText(line, box.x + box.insets.left, box.y + box.insets.top + (box.lineHeight - box.ascent - box.descent) / 2 + box.ascent + index * box.lineHeight)); context.restore();
     }
-    return canvas;
+    context.restore();
   }
   private updateProjectionFrame(): { left: number; right: number } {
+    if (this.videoCapture) { this.camera.clearViewOffset(); return { left: 0, right: videoWidth }; }
     const viewport = this.host.getBoundingClientRect(); let left = 0, right = viewport.width;
     const leftPanel = document.querySelector<HTMLElement>('.left-panel'), rightPanel = document.querySelector<HTMLElement>('.right-stack');
     if (leftPanel && !leftPanel.hidden && leftPanel.offsetWidth) left = Math.max(0, leftPanel.getBoundingClientRect().right - viewport.left + 12);
@@ -494,7 +746,16 @@ export class Viewport {
     this.camera.setViewOffset(viewport.width, viewport.height, (viewport.width - left - right) / 2, 0, viewport.width, viewport.height);
     return { left, right };
   }
-  private resize(): void { const width = this.host.clientWidth, height = this.host.clientHeight; if (!width || !height) return; this.renderer.setSize(width, height); this.composer.setSize(width, height); this.outline.setSize(width, height); this.camera.aspect = width / height; this.updateProjectionFrame(); this.dirty = true; }
+  private resize(): void {
+    const { width, height } = this.renderSize; if (!width || !height) return;
+    this.renderer.setSize(width, height, !this.videoCapture); this.composer.setSize(width, height); this.outline.setSize(width, height); this.camera.aspect = width / height; this.updateProjectionFrame();
+    if (this.playback) {
+      const { layout, progress } = this.playback;
+      this.playback.layout = this.getPlaybackLayout(layout.project, layout.segment);
+      this.setPlaybackCamera(this.playback.layout, progress);
+    }
+    this.dirty = true;
+  }
   private updateDepthRange(): void {
     this.camera.updateMatrixWorld(true); this.transparentDepth.clear();
     this.meshes.forEach(mesh => { if (mesh.visible && mesh.material.transparent && mesh.geometry.boundingBox) this.transparentDepth.set(mesh.id, mesh.geometry.boundingBox.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(this.camera.matrixWorldInverse, mesh.matrixWorld)).max.z); });
@@ -526,6 +787,6 @@ export class Viewport {
       this.scene.background = background; this.renderer.autoClear = autoClear;
     }
   }
-  private animate = (): void => { this.raf = requestAnimationFrame(this.animate); this.controls.update(); this.nextThumbnail(); if (!this.dirty) return; this.dirty = false; this.scene.updateMatrixWorld(true); this.updateDepthRange(); this.updateAnnotations(); this.renderScene(); this.navigator?.render(); };
+  private animate = (): void => { this.raf = requestAnimationFrame(this.animate); if (this.videoCapture) return; this.controls.update(); this.nextThumbnail(); if (!this.dirty) return; this.dirty = false; this.scene.updateMatrixWorld(true); this.updateDepthRange(); this.updateAnnotations(); this.renderScene(); this.navigator?.render(); };
   dispose(): void { cancelAnimationFrame(this.raf); this.observer.disconnect(); this.controls.dispose(); this.transform.dispose(); this.navigator?.dispose(); this.constructionAxes.dispose(); this.sectionView.dispose(); this.disposeAnnotationObjects(); this.paintCleanups.forEach(cleanup => cleanup()); this.paintCleanups = []; this.meshes.forEach(mesh => { mesh.geometry.dispose(); mesh.material.dispose(); }); this.composer.dispose(); this.renderer.dispose(); this.ghost.remove(); }
 }

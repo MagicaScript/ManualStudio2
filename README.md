@@ -4,7 +4,15 @@ ManualStudio is a local Three.js editor for creating assembly steps, surface ann
 
 ## Open a project
 
-Install and build the application using the [local development commands](#local-development). Start the server and open `http://127.0.0.1:4189` in Chrome or Edge. On Windows, `Open ManualStudio.cmd` can start the server and open the browser.
+On Windows, double-click `Open ManualStudio.cmd` in the cloned repository. You can run the same launcher from PowerShell.
+
+```powershell
+& '.\Open ManualStudio.cmd'
+```
+
+The launcher lists any dependency installs and build work before asking for confirmation. Press Enter or **Y** to prepare the workspace, or **N** to cancel. It opens Chrome or Edge when the workspace is ready.
+
+For manual setup, use the [local development commands](#local-development) and open `http://127.0.0.1:4189`.
 
 A fresh workspace starts empty. Use the **File** menu to create or restore a project.
 
@@ -29,11 +37,11 @@ A fresh workspace starts empty. Use the **File** menu to create or restore a pro
 - Native construction axes with source names, complete occurrence transforms, validated display-cache extents, individual visibility, selection and centering. Axes follow a rigid component move and remain fixed when its bodies are independently exploded.
 - Drag parts directly from the X-Ray canvas onto a step. Drag a completed step’s assembly chip onto a later step to retain its internal arrangement as a group.
 - Start, transition and end frames retain part poses, camera, annotations and duration. Record a view with **Save update**, add/delete transition frames, apply a camera to all frames, scrub, play, pause and change speed.
-- Global playback and MP4 use the same sequence: a 2-second cover, 1.5-second step titles, saved transitions and completed-step holds. The start frame's duration sets the completed-step hold; later durations set their incoming transition. Local playback omits global cards. Video exports use exact 30 fps sampling, including final poses and removal endpoints.
+- Global playback and MP4 share a timeline with a 2-second cover, 1.5-second step titles, saved transitions and completed-step holds. The start frame's duration sets the completed-step hold. Later durations set their incoming transition. Local playback omits global cards. GUI, API and CLI video exports render at 1920 × 1080 with exact 60 fps sampling, including final poses and removal endpoints.
 - Object/part labels with automatic placement, font size, hide/reset, per-label offsets and automatic subassembly labels.
 - Surface-bound Clip, Glue, Screw, Remove, Text, Arrow, Circle, Rectangle and Pencil notes. Choose **Snap to** for points, entities, connected faces or cylindrical segments.
 - Rectangle, Circle and Arrow use Bambu's seven preset colors, with hover feedback and a green selection outline. Caption backgrounds have seven darker presets for white text. Existing custom colors display their saved swatch; creation and editing use the same presets, and shape selections retain the separate glue-color default.
-- Rectangle and Circle centers follow their 3D attachment while their outlines face the camera. Their millimeter dimensions scale with zoom. Shapes, arrows and caption leaders use 2 px strokes in the editor and captures. New notes default to Bambu green; part-name leaders use the native green line and endpoint dot. Click an outline or arrowhead to edit it; hollow interiors pass through to the model.
+- Rectangle and Circle centers follow their 3D attachment while their outlines face the camera. Their millimeter dimensions scale with zoom. Shapes, arrows and caption leaders use 2 px strokes in the editor. Video scales those strokes with the annotation layer. New notes default to Bambu green; part-name leaders use the native green line and endpoint dot. Click an outline or arrowhead to edit it; hollow interiors pass through to the model.
 - Glue supports whole surfaces, circular patches, axial bands and brush strokes. Repeated clicks add separate regions to one operation; each region can be removed independently. Opaque surface coverage prevents overlapping strokes from darkening. New glue marks use muted blue-violet (`#8c91b5`).
 - Surface paint is shaded in the body's own draw, with analytic region-edge coverage and multisampled geometry edges. It uses the body's depth without a displaced overlay, so inserted coated tubes are occluded by their sleeves.
 - Assembly Structure and Assembly Guide actions have hover and keyboard-focus feedback. Name-copy confirmations stack vertically, hold for 500 ms, then fade for 200 ms; new entries and reflow move over 120 ms.
@@ -76,7 +84,7 @@ Equivalent native mesh exports can reorder vertices and triangles. Synchronizati
 | Control | Action |
 | --- | --- |
 | Left-drag empty space | Orbit |
-| Right-drag | Pan |
+| Middle-drag or right-drag in the 3D workspace | Pan |
 | Wheel | Zoom |
 | Click / Ctrl-click | Select / toggle multiple selection |
 | Shift-click in Assembly list | Select a continuous range |
@@ -86,8 +94,9 @@ Equivalent native mesh exports can reorder vertices and triangles. Synchronizati
 | Alt-click | Cycle overlapping parts; select an individual group member |
 | Double-click a list name or 3D name tag | Rename inline; Enter or focus loss saves, Escape cancels |
 | Middle-click a list row or 3D name tag | Focus that part, object or axis |
+| Right-click a 3D part | Select it and open the assembly menu |
 | Right-click a 3D name tag | Copy its full displayed name |
-| Drag a selected part to a step | Add it to that step |
+| Drag a selected part onto a step card | Add it to that step and stay in Overall preview when dragging from there |
 | Drag a step tag to an insertion gap | Reorder the step |
 | M / R | Move / rotate |
 | F / Home | Fit selection / fit all |
@@ -102,17 +111,31 @@ Save, Undo and Redo show bordered hover-help boxes, including when a control is 
 
 Use **Insert Step** between cards to insert an operation at that position. The original cards and their keyframes retain their identities.
 
+In **Overall preview**, enable **Unassembled only** to show the visible source parts that are neither initially assembled nor assigned to an assembly operation. The **Final assembly** summary does not count as an operation for this filter.
+
 The 128-pixel 3D navigator follows the camera. Its six faces, twelve edges and eight corners select all 26 preset directions. Hover highlights the corresponding region across adjoining faces. Drag the cube to orbit with Z up, including when the pointer leaves the cube. Double-click or press Enter for the isometric view. Ctrl+number, Ctrl+Tab and Ctrl+S are reserved for Chrome. Use the navigator and visible Save update control for the corresponding assembly actions.
 
 Rendering splits normals at hard creases, preserves smooth curved surfaces with angle-weighted normals, and keeps the original triangle ordering for surface annotations. Camera-relative lighting keeps the underside readable. The viewport and export renderer share the same multisample antialiasing and fitted depth range.
 
-Section bodies and stencil masks use sample coverage at the cutting plane so orange cap silhouettes receive antialiasing without closing real holes. PDF and Markdown exports include all saved keyframes; PDF uses two keyframes per step page. Exported captions preserve full text and resolve overlapping boxes without changing saved label positions.
+Section bodies and stencil masks use sample coverage at the cutting plane so orange cap silhouettes receive antialiasing without closing real holes. PDF and Markdown exports include all saved keyframes. PDF shows up to two keyframes per page and continues long step descriptions on additional pages. Exported captions preserve full text and resolve overlapping boxes without changing saved label positions.
 
-PDF, Markdown and video exports omit world axes and Fusion construction references. PNG preserves the current editing view. Exporting leaves all saved eye settings and reference geometry intact.
+PDF, Markdown and video use the assembly display mode at export time and honor saved part, object and frame visibility. They omit world axes and Fusion construction references. PNG preserves the current editing view. Exporting leaves all saved eye settings and reference geometry intact.
+
+The MP4 exporter draws the scene and labels at the output resolution. Chrome or Edge encodes H.264 directly through WebCodecs when available. On hosts without working AVC encoding, the exporter sends frames to FFmpeg. Both paths use the same timeline and video settings.
 
 ## Local development
 
-Requires Node.js 22.18 or newer. The Windows launcher finds Google Chrome automatically or uses the Chromium executable specified by `MANUALSTUDIO_CHROME`. You can also open the local URL manually in Chrome or Edge. MP4 encoding uses FFmpeg on PATH.
+| Dependency | Requirement | How the launcher prepares it |
+| --- | --- | --- |
+| Node.js and npm | Node.js 22.18 or newer with bundled npm | Offers Node.js LTS via the `OpenJS.NodeJS.LTS` WinGet package. |
+| JavaScript packages | `package-lock.json` | Installs the locked versions using `npm ci`. |
+| Browser | Chrome or Edge with WebGL 2, with Chrome used for browser tests | Uses an installed browser or the executable specified by `MANUALSTUDIO_CHROME`. Offers Google Chrome Stable via the `Google.Chrome` WinGet package if needed. |
+| FFmpeg and ffprobe | FFmpeg 5.1 or newer with `libx264` | Uses compatible tools on `PATH`, or downloads [FFmpeg 9.0.2 Essentials](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2) to `.local/dependencies/` on Windows x64. The MP4 fallback and video tests use the downloaded tools when available. |
+| Python for tests | Python 3.10 or newer | `--test-setup` offers CPython 3.14 via the `Python.Python.3.14` WinGet package if needed. |
+
+Native import uses the separately installed [Autodesk Fusion](https://www.autodesk.com/products/fusion-360/overview) host and its Python API. See [Native Fusion import and updates](#native-fusion-import-and-updates) for the add-in setup.
+
+To prepare the dependencies and build without opening the editor, use `& '.\Open ManualStudio.cmd' --test-setup`. Use these commands when the dependencies are already available.
 
 ```powershell
 npm ci
@@ -121,6 +144,8 @@ npm start
 ```
 
 In a second terminal, run `npm run cli -- help` for automation commands or `npm test` for the regression suite. See [Validation](Validation.md) for test dependencies. `npm run dev` serves the editable interface on port 5189 and forwards API and model requests to the running server on port 4189.
+
+After updating the code, save edits and let active exports finish. Stop the ManualStudio server listening on port 4189, then run `Open ManualStudio.cmd` again and reload any existing editor tabs. The launcher reuses a running server, so rebuilding the browser interface alone can leave an older API running. The launcher records the PID it started in `.local/server.pid`.
 
 Projects and immutable geometry revisions live in `data/` or the directory configured with `MANUALSTUDIO_DATA`. Use a separate data directory for replay experiments. The previous project revision is retained under `data/backups/`. A portable `.manualstudio` archive includes the project document and its referenced geometry.
 
@@ -141,3 +166,5 @@ See [Agent Guide](Agent%20Guide.md) for the CLI and HTTP API, and [Bambu Assembl
 Copyright 2026 MagicaScript.
 
 ManualStudio is licensed under the [Apache License 2.0](LICENSE).
+
+MP4 packaging uses [Mediabunny](https://mediabunny.dev/), which is distributed under the [Mozilla Public License 2.0](https://github.com/Vanilagy/mediabunny/blob/main/LICENSE).

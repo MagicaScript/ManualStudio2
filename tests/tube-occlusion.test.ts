@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { access, mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer } from 'vite';
 
 interface TubeResult { angle: number; coveredPaintPixels: number; coveredInteriorPixels: number; biasedPaintPixels: number; exposedPaintPixels: number }
@@ -18,9 +19,7 @@ test('nested native tubes hide glue without slope-bias leakage at grazing views'
     context.skip('The private tube occlusion fixture is unavailable. See Validation.md.');
     return;
   }
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The tube occlusion check requires installed Chrome.');
   const browser = await chromium.launch({ executablePath, headless: true });
   const server = await createServer({ configFile: false, root: process.cwd(), logLevel: 'error', server: { host: '127.0.0.1', port: 0 }, appType: 'mpa' });

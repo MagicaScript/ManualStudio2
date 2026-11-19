@@ -1,6 +1,9 @@
 export type Vec3 = [number, number, number];
 export type Quaternion = [number, number, number, number];
 export interface Pose { position: Vec3; quaternion: Quaternion }
+export type AxisReference = { axisId: string } | { origin: Vec3; direction: Vec3; partId?: string };
+export interface MotionMembers { partIds?: string[]; groupIds?: string[] }
+export interface RigidMotion extends MotionMembers { axis?: AxisReference; distance?: number; angleDegrees?: number; translation?: Vec3 }
 export interface Camera { eye: Vec3; target: Vec3; up: Vec3; margin: number }
 export interface GeometryRef { file: string; offset: number; vertices: number; triangles: number; normalsOffset?: number }
 export interface Part {
@@ -24,12 +27,17 @@ export interface Anchor { partId: string; point: Vec3; normal: Vec3; target: Tar
 export type NoteKind = 'clip' | 'glue' | 'screw' | 'remove' | 'text' | 'arrow' | 'circle' | 'rectangle' | 'pencil';
 export interface Note { id: string; kind: NoteKind; text: string; color: string; background: string; size: number; anchors: Anchor[]; offset: [number, number]; hidden?: boolean }
 export interface FrameLabels { showLabels: boolean; labelMode: 'auto' | 'object' | 'part'; labelFontSize: number; labelOffsets: Record<string, [number, number]>; hiddenLabels: string[] }
-export interface Keyframe { id: string; name: string; kind: 'start' | 'transition' | 'end'; poses: Record<string, Pose>; hidden: string[]; camera?: Camera; notes: Note[]; duration: number; image?: string; labels?: FrameLabels }
+export interface Keyframe { id: string; name: string; kind: 'start' | 'transition' | 'end'; poses: Record<string, Pose>; hidden: string[]; xrayPartIds?: string[]; camera?: Camera; notes: Note[]; duration: number; image?: string; labels?: FrameLabels }
 export interface Subassembly { id: string; name: string; partIds: string[]; poses: Record<string, Pose>; sourceStepId?: string }
 export interface AssemblyStep { id: string; name: string; partIds: string[]; groups: Subassembly[]; removePartIds: string[]; frames: Keyframe[]; final: boolean; description: string; inheritedFrom?: string; removalRestore?: Record<string, { start: Pose; end: Pose; endHidden: boolean }> }
-export interface Settings { showLabels: boolean; labelMode: 'auto' | 'object' | 'part'; labelFontSize: number; showAxes: boolean; showConstructionAxes?: boolean; constructionAxisVisibility?: Record<string, boolean>; objectVisibility?: Record<string, boolean>; partVisibility?: Record<string, boolean>; showExplosionColumn: boolean; explodeObjects: boolean; playStrategy: 'sequential' | 'subassembly'; title: string; coverImage?: string; secondPageImage?: string; labelOffsets: Record<string, [number, number]>; hiddenLabels: string[] }
+export interface Settings { showLabels: boolean; labelMode: 'auto' | 'object' | 'part'; labelFontSize: number; showAxes: boolean; showConstructionAxes?: boolean; constructionAxisVisibility?: Record<string, boolean>; objectVisibility?: Record<string, boolean>; partVisibility?: Record<string, boolean>; showExplosionColumn: boolean; explodeObjects: boolean; playStrategy: 'sequential' | 'subassembly'; defaultDisplayMode?: DisplayMode; title: string; coverImage?: string; secondPageImage?: string; labelOffsets: Record<string, [number, number]>; hiddenLabels: string[] }
 export interface Project { version: 1; id: string; name: string; revision: number; model: Model; steps: AssemblyStep[]; settings: Settings; updatedAt: string }
 export type DisplayMode = 'all' | 'xray' | 'current';
+export const DEFAULT_DISPLAY_MODE: DisplayMode = 'xray';
+export function isDisplayMode(value: unknown): value is DisplayMode {
+  return value === 'all' || value === 'xray' || value === 'current';
+}
+export interface LabelLayoutRequest { frameId: string; progress: number[] }
 export interface SyncMatch { oldId: string; newId: string; reason: 'source-key' | 'path' | 'name' | 'geometry' | 'manual'; geometryChanged?: boolean }
 export interface SyncPlan { id: string; baseRevision: number; model: Model; matches: SyncMatch[]; added: string[]; removed: string[]; unresolved: { newId: string; candidates: string[] }[]; replacesBaseline?: boolean; removedFromSteps?: { stepId: string; partIds: string[]; noteIds: string[] }[] }
 export interface SessionState { stepId: string | null; frameId: string | null; selected: string[]; display: DisplayMode; explosion: number; section: number; sectionNormal?: Vec3; frameProgress?: number; playing: boolean }
@@ -51,9 +59,10 @@ export type Command =
   | { type: 'group.rename'; stepId: string; groupId: string; name: string }
   | { type: 'part.initial'; partIds: string[]; value: boolean }
   | { type: 'part.remove'; stepId: string; partIds: string[]; value: boolean }
-  | { type: 'frame.add'; stepId: string; afterId: string }
+  | { type: 'frame.add'; stepId: string; afterId: string; frameId?: string }
+  | { type: 'frame.transform'; stepId: string; frameId: string; motions: RigidMotion[] }
   | { type: 'frame.delete'; stepId: string; frameId: string }
-  | { type: 'frame.update'; stepId: string; frameId: string; patch: Partial<Pick<Keyframe, 'poses' | 'hidden' | 'camera' | 'duration' | 'name' | 'labels'>> & { image?: string | null } }
+  | { type: 'frame.update'; stepId: string; frameId: string; patch: Partial<Pick<Keyframe, 'poses' | 'hidden' | 'xrayPartIds' | 'camera' | 'duration' | 'name' | 'labels'>> & { image?: string | null } }
   | { type: 'frame.cameraAll'; stepId: string; camera: Camera }
   | { type: 'note.put'; stepId: string; frameId: string; note: Note }
   | { type: 'note.update'; stepId: string; frameId: string; noteId: string; patch: Partial<Pick<Note, 'text' | 'color' | 'background' | 'size' | 'offset' | 'hidden'>> }

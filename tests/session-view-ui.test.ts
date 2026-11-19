@@ -1,19 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chromium, type Browser } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import { zipSync, strToU8 } from 'fflate';
 import type { Project, SessionState } from '../shared/types.ts';
 
 test('section planes and timeline stops synchronize with the API, including fractional frame previews', { timeout: 60000 }, async () => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath);
   const directory = await mkdtemp(path.join(tmpdir(), 'manualstudio-session-view-'));
   const api = spawn(process.execPath, ['--experimental-strip-types', 'server/server.ts'], { cwd: process.cwd(), env: { ...process.env, MANUALSTUDIO_PORT: '0', MANUALSTUDIO_DATA: directory }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

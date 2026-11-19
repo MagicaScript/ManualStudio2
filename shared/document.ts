@@ -1,7 +1,9 @@
 import { Box3, Matrix4, Quaternion, Vector3 } from 'three';
 import { stepReorderChanges } from './step-order.ts';
+import { isDisplayMode } from './types.ts';
 import type { AssemblyStep, Camera, Command, FrameLabels, Keyframe, Model, Part, Pose, Project, Subassembly, Vec3 } from './types.ts';
 import { browserRoots, findBrowserNode } from './model-tree.ts';
+import { transformPoses } from './assembly-motion.ts';
 
 export const uid = (prefix: string): string => `${prefix}-${crypto.randomUUID()}`;
 export const copy = <T>(value: T): T => structuredClone(value);
@@ -21,6 +23,17 @@ export function findPart(project: Project, id: string): Part {
   const part = project.model.parts.find(item => item.id === id); if (!part) throw new Error(`Unknown part: ${id}`); return part;
 }
 export function frameLabels(project: Project, frame?: Keyframe): FrameLabels { return frame?.labels ?? project.settings; }
+export const DEFAULT_LABEL_OFFSET: readonly [number, number] = [20, -30];
+export function interpolateOffset(start: readonly [number, number], end: readonly [number, number], t: number): [number, number] {
+  return [start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t];
+}
+export function assembledPartIds(project: Project): Set<string> {
+  const ids = new Set(project.model.parts.filter(part => part.initiallyAssembled).map(part => part.id));
+  for (const step of project.steps) {
+    if (!step.final) step.partIds.forEach(id => ids.add(id));
+  }
+  return ids;
+}
 export function assemblySnapshot(step: AssemblyStep): Subassembly {
   const end = step.frames.at(-1)!;
   const partIds = step.partIds.filter(id => !step.removePartIds.includes(id) && !end.hidden.includes(id));
@@ -117,6 +130,7 @@ export function setMembers(project: Project, step: AssemblyStep, partIds: string
   for (const frame of step.frames) {
     frame.poses = Object.fromEntries(step.partIds.map(id => [id, previous.has(id) ? frame.poses[id] ?? copy(homePose(findPart(project, id))) : frame.kind === 'start' ? exploded[id] : copy(homePose(findPart(project, id)))]));
     frame.hidden = frame.hidden.filter(id => partIds.includes(id));
+    if (frame.xrayPartIds) frame.xrayPartIds = frame.xrayPartIds.filter(id => partIds.includes(id));
     frame.notes = frame.notes.filter(note => note.anchors.every(anchor => partIds.includes(anchor.partId)));
     if (membershipChanged) delete frame.image;
   }
@@ -141,7 +155,7 @@ export function mergeCoversWholeModel(project: Project, sources: AssemblyStep[])
 function mergedEndpoints(project: Project, sources: AssemblyStep[]): AssemblyStep {
   const step = makeStep(project, 'Merged Step', [...new Set(sources.flatMap(source => source.partIds))]);
   for (const frame of step.frames) {
-    const hidden = new Set<string>();
+    const hidden = new Set<string>(), xray = new Set<string>();
     for (const source of sources) {
       const snapshot = source.frames.find(candidate => candidate.kind === frame.kind) ?? (frame.kind === 'end' ? source.frames.find(candidate => candidate.kind === 'start') : undefined);
       if (!snapshot) continue;
@@ -149,9 +163,11 @@ function mergedEndpoints(project: Project, sources: AssemblyStep[]): AssemblySte
       for (const id of source.partIds) {
         if (snapshot.poses[id]) frame.poses[id] = copy(snapshot.poses[id]);
         if (snapshot.hidden.includes(id)) hidden.add(id); else hidden.delete(id);
+        if (snapshot.xrayPartIds?.includes(id)) xray.add(id); else xray.delete(id);
       }
     }
     frame.hidden = step.partIds.filter(id => hidden.has(id));
+    if (xray.size) frame.xrayPartIds = step.partIds.filter(id => xray.has(id));
   }
   const removed = new Set<string>();
   for (const source of sources) for (const id of source.partIds) { if (source.removePartIds.includes(id)) removed.add(id); else removed.delete(id); }
@@ -183,6 +199,7 @@ export function refreshFinalAssembly(project: Project, resetEnd = false): Assemb
       if (step.removePartIds.includes(id) || end.hidden.includes(id)) hidden.add(id); else hidden.delete(id);
     }
   }
+  const removedMembers = new Set(final.partIds.filter(id => !Object.hasOwn(poses, id)));
   final.partIds = ids; final.groups = []; final.removePartIds = final.removePartIds.filter(id => ids.includes(id));
   for (const frame of final.frames) {
     const replace = resetEnd && frame.kind === 'end';
@@ -193,6 +210,7 @@ export function refreshFinalAssembly(project: Project, resetEnd = false): Assemb
       return !previous || previous.position.some((value, index) => value !== next.position[index]) || previous.quaternion.some((value, index) => value !== next.quaternion[index]);
     }) || frame.hidden.length !== nextHidden.length || frame.hidden.some(id => !nextHidden.includes(id));
     frame.poses = nextPoses; frame.hidden = nextHidden;
+    if (removedMembers.size && Array.isArray(frame.xrayPartIds)) frame.xrayPartIds = frame.xrayPartIds.filter(id => !removedMembers.has(id));
     frame.notes = frame.notes.filter(note => note.anchors.every(anchor => ids.includes(anchor.partId)));
     if (changed) delete frame.image;
   }
@@ -319,8 +337,8 @@ export function applyCommand(project: Project, command: Command): string | undef
     case 'frame.add': {
       const step = findStep(project, command.stepId);
       const source = findFrame(step, command.afterId); const frame = copy(source);
-      frame.id = uid('frame'); frame.kind = 'transition'; frame.name = 'Transition frame'; delete frame.image;
-      frame.notes.forEach(note => { note.id = uid('note'); });
+      if (command.frameId && project.steps.some(step => step.frames.some(frame => frame.id === command.frameId))) throw new Error(`Keyframe ID is already in use: ${command.frameId}.`);
+      frame.id = command.frameId ?? uid('frame'); frame.kind = 'transition'; frame.name = 'Transition frame'; delete frame.image;
       step.frames.splice(Math.min(step.frames.indexOf(source) + 1, step.frames.length - 1), 0, frame); result = frame.id; break;
     }
     case 'frame.delete': {
@@ -332,8 +350,16 @@ export function applyCommand(project: Project, command: Command): string | undef
       const { image, ...patch } = command.patch;
       Object.assign(frame, copy(patch));
       if (typeof image === 'string') frame.image = image;
-      else if (image === null || patch.poses || patch.camera || patch.hidden || patch.labels) delete frame.image;
+      else if (image === null || patch.poses || patch.camera || patch.hidden || patch.xrayPartIds || patch.labels) delete frame.image;
       if (step.final && frame.kind === 'end' && patch.poses) for (const [id, pose] of Object.entries(patch.poses)) findPart(project, id).assemblyHome = copy(pose);
+      break;
+    }
+    case 'frame.transform': {
+      const step = findStep(project, command.stepId), frame = findFrame(step, command.frameId);
+      const parts = new Map(project.model.parts.map(part => [part.id, part]));
+      frame.poses = transformPoses(command.motions, frame.poses, parts, project.model.constructionAxes ?? [], step);
+      delete frame.image;
+      if (step.final && frame.kind === 'end') for (const id of step.partIds) parts.get(id)!.assemblyHome = copy(frame.poses[id]);
       break;
     }
     case 'frame.cameraAll': {
@@ -356,19 +382,45 @@ export function applyCommand(project: Project, command: Command): string | undef
   }
   refreshFinalAssembly(project); return result;
 }
-export function interpolateFrames(from: Keyframe, to: Keyframe, t: number): Keyframe {
-  const u = Math.max(0, Math.min(1, t)); const poses: Record<string, Pose> = {};
-  for (const [id, target] of Object.entries(to.poses)) {
-    const start = from.poses[id] ?? target;
-    poses[id] = { position: new Vector3(...start.position).lerp(new Vector3(...target.position), u).toArray(),
-      quaternion: new Quaternion(...start.quaternion).slerp(new Quaternion(...target.quaternion), u).toArray() };
+export function interpolatePose(start: Pose, end: Pose, t: number): Pose {
+  return { position: new Vector3(...start.position).lerp(new Vector3(...end.position), t).toArray(),
+    quaternion: new Quaternion(...start.quaternion).slerp(new Quaternion(...end.quaternion), t).toArray() };
+}
+export function interpolateCamera(start: Camera, end: Camera, t: number): Camera {
+  if (t === 0 || start === end) return start;
+  if (t === 1) return end;
+  return { margin: start.margin + (end.margin - start.margin) * t,
+    eye: new Vector3(...start.eye).lerp(new Vector3(...end.eye), t).toArray(),
+    target: new Vector3(...start.target).lerp(new Vector3(...end.target), t).toArray(),
+    up: new Vector3(...start.up).lerp(new Vector3(...end.up), t).normalize().toArray() };
+}
+export function interpolateFrames(from: Keyframe, to: Keyframe, t: number, defaultLabels?: FrameLabels): Keyframe {
+  if (t <= 0) return copy(from);
+  if (t >= 1) return copy(to);
+  const firstHalf = t < .5, frame = copy(firstHalf ? from : to);
+  frame.poses = Object.fromEntries(Object.entries(to.poses).map(([id, pose]) => [id, interpolatePose(from.poses[id] ?? pose, pose, t)]));
+  frame.hidden = [...(t < .999 ? from.hidden : to.hidden)];
+  if (from.xrayPartIds) frame.xrayPartIds = [...from.xrayPartIds];
+  else delete frame.xrayPartIds;
+  if (from.camera && to.camera) frame.camera = interpolateCamera(from.camera, to.camera, t);
+  const otherNotes = new Map((firstHalf ? to : from).notes.filter(note => !note.hidden).map(note => [note.id, note]));
+  for (const note of frame.notes) {
+    const other = otherNotes.get(note.id);
+    if (note.hidden || !other) continue;
+    note.offset = firstHalf ? interpolateOffset(note.offset, other.offset, t) : interpolateOffset(other.offset, note.offset, t);
   }
-  const frame = { ...copy(u < .5 ? from : to), poses, hidden: u < .999 ? from.hidden : to.hidden };
-  if (from.camera && to.camera) frame.camera = { ...from.camera, eye: new Vector3(...from.camera.eye).lerp(new Vector3(...to.camera.eye), u).toArray(), target: new Vector3(...from.camera.target).lerp(new Vector3(...to.camera.target), u).toArray(), up: new Vector3(...from.camera.up).lerp(new Vector3(...to.camera.up), u).normalize().toArray() };
+  const startLabels = from.labels ?? defaultLabels, endLabels = to.labels ?? defaultLabels;
+  if (startLabels && endLabels && startLabels !== endLabels) {
+    const ids = new Set([...Object.keys(startLabels.labelOffsets), ...Object.keys(endLabels.labelOffsets)]);
+    const { showLabels, labelMode, labelFontSize, hiddenLabels } = firstHalf ? startLabels : endLabels;
+    frame.labels = { showLabels, labelMode, labelFontSize, hiddenLabels: [...hiddenLabels], labelOffsets: Object.fromEntries([...ids].map(id => [id,
+      interpolateOffset(startLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET, endLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET, t)])) };
+  }
   return frame;
 }
 export function validateProject(project: Project): string[] {
   const errors: string[] = []; const ids = new Set(project.model.parts.map(p => p.id)); const stepIds = new Set<string>();
+  if (project.settings.defaultDisplayMode !== undefined && !isDisplayMode(project.settings.defaultDisplayMode)) errors.push('Default assembly display must be all, xray, or current.');
   const finite = (v: number[], n: number): boolean => Array.isArray(v) && v.length === n && v.every(Number.isFinite);
   const poseValid = (p: Pose): boolean => p && finite(p.position, 3) && finite(p.quaternion, 4) && Math.abs(p.quaternion.reduce((sum, x) => sum + x * x, 0) - 1) < .001;
   for (const part of project.model.parts) if (!poseValid(part.home) || part.assemblyHome && !poseValid(part.assemblyHome)) errors.push(`${part.name}: invalid assembly pose.`);
@@ -385,6 +437,7 @@ export function validateProject(project: Project): string[] {
     for (const frame of step.frames) {
       for (const id of step.partIds) if (!poseValid(frame.poses[id])) errors.push(`${frame.name}: invalid pose for ${id}.`);
       if (frame.hidden.some(id => !step.partIds.includes(id))) errors.push(`${frame.name}: unknown hidden part.`);
+      if (frame.xrayPartIds !== undefined && (!Array.isArray(frame.xrayPartIds) || frame.xrayPartIds.some(id => !step.partIds.includes(id)))) errors.push(`${frame.name}: X-Ray part IDs must belong to this step.`);
       if (!(frame.duration > 0 && Number.isFinite(frame.duration))) errors.push('Frame duration must be positive.');
       for (const note of frame.notes) for (const anchor of note.anchors) {
         if (!step.partIds.includes(anchor.partId) || !finite(anchor.point, 3) || !finite(anchor.normal, 3)) errors.push(`${note.id}: invalid surface anchor.`);

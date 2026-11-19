@@ -5,13 +5,13 @@ ManualStudio exposes the same assembly document and command engine to the interf
 ## Start and inspect
 
 ```powershell
-node tools/launch.mjs --no-browser
+node tools/launch.mjs --yes --no-browser
 npm run cli -- health
 npm run cli -- projects
 npm run cli -- get PROJECT_ID project.json
 ```
 
-The default endpoint is `http://127.0.0.1:4189`. Set `MANUALSTUDIO_URL` for the CLI or `MANUALSTUDIO_PORT` for the server if another port is needed. The server binds only to loopback.
+With Node.js and npm installed, `--yes` accepts dependency installation and frontend builds when needed. `--no-browser` starts the server without opening a browser. The default endpoint is `http://127.0.0.1:4189`. Set `MANUALSTUDIO_URL` for the CLI or `MANUALSTUDIO_PORT` for the server if another port is needed. The server binds only to loopback.
 
 A new workspace starts empty. Import a model or open a portable archive, then use `npm run cli -- projects` to list project IDs. Use the chosen ID wherever the examples say `PROJECT_ID`. Run replay experiments against a separate API instance with an isolated `MANUALSTUDIO_DATA` directory and point `MANUALSTUDIO_URL` at that instance.
 
@@ -20,7 +20,9 @@ A new workspace starts empty. Import a model or open a portable archive, then us
 | `GET /api/health` | Application, reference version and data directory |
 | `GET /api/projects` | Project summaries |
 | `GET /api/projects/:id` | Complete project document |
-| `POST /api/projects/:id/commands` | Apply an atomic command batch with an expected revision |
+| `POST /api/projects/:id/commands` | Preview or apply an atomic command batch with an expected revision |
+| `POST /api/projects/:id/geometry` | Find parts and axes, measure a mesh surface, or generate a paint region |
+| `POST /api/projects/:id/motion-check` | Check sampled motion against selected obstacle parts |
 | `PUT /api/projects/:id` | Replace the document using `{project, expectedRevision}` |
 | `GET/PUT /api/projects/:id/session` | Inspect or set the visible step, frame, selection and display mode |
 | `GET /api/events` | Live project and selection updates |
@@ -30,7 +32,7 @@ A new workspace starts empty. Import a model or open a portable archive, then us
 | `POST /api/sync/:id/apply` | Apply the reviewed update |
 | `GET /api/projects/:id/archive` | Download a portable project archive |
 | `POST /api/open-archive` | Open raw portable-archive bytes as a new project |
-| `POST /api/render` | Start an independent browser renderer for PNG/PDF/Markdown/MP4/JSON |
+| `POST /api/render` | Start an independent browser renderer for exports, scoped previews or label coordinates |
 | `GET /api/render/:jobId` | Export status and the saved file’s path/URL |
 | `GET /api/fusion/status` | Fusion reader connection, active cloud file and latest version |
 | `POST /api/fusion/import` | Queue a native cloud import with optional `fileId` and `projectId` for sync |
@@ -76,9 +78,12 @@ Write one command or an array of commands to a JSON file, then run:
 
 ```powershell
 npm run cli -- command PROJECT_ID commands.json
+npm run cli -- command PROJECT_ID commands.json --preview
 ```
 
 The CLI reads the current revision before submitting. HTTP callers submit `{ "expectedRevision": 12, "commands": [...] }`. A `409` response means the project changed; reread and reconcile before retrying. The batch is applied to one document and saved atomically. Open interfaces refresh automatically.
+
+Add `preview: true` to evaluate the same commands without saving or incrementing the revision. The response includes the proposed project, command results, affected step and frame IDs in `changes.steps`, and pose/visibility differences in `changes.handoffWarnings`. Handoff checks compare shared parts from one playback step's End to the next step's Start, using thresholds of 0.001 mm and 0.01°. Preview an empty command array to audit all current handoffs. When applying a reviewed batch over HTTP, pass the same `expectedRevision` as the preview.
 
 `shared/types.ts` is the definitive schema. `shared/document.ts` implements the commands.
 
@@ -101,9 +106,10 @@ The CLI reads the current revision before submitting. HTTP callers submit `{ "ex
 | `group.rename` | `stepId`, `groupId`, `name` |
 | `part.initial` | `partIds`, `value` |
 | `part.remove` | `stepId`, `partIds`, `value` |
-| `frame.add` | `stepId`, `afterId` |
+| `frame.add` | `stepId`, `afterId`, optional new `frameId` for later commands in the same batch |
 | `frame.delete` | `stepId`, `frameId` of a transition frame |
-| `frame.update` | `stepId`, `frameId`, `patch` containing poses, hidden IDs, camera, duration, image or name |
+| `frame.update` | `stepId`, `frameId`, `patch` containing poses, hidden IDs, `xrayPartIds`, camera, duration, image or name |
+| `frame.transform` | `stepId`, `frameId`, ordered `motions` of selected parts or step groups |
 | `frame.cameraAll` | `stepId`, `camera` |
 | `note.put` | `stepId`, `frameId`, complete `note` |
 | `note.update` | `stepId`, `frameId`, `noteId`, property `patch` |
@@ -131,11 +137,51 @@ The response’s `results` array supplies newly created step/frame IDs. Next set
 
 Reordering before the same step or into its existing position is a no-op. A batch containing only unchanged `step.reorder` operations does not increment the project revision. Incoming external edits clear local browser Undo/Redo history; normal echoes of the browser's own saves preserve it.
 
+### Author motion in a batch
+
+Each motion takes `partIds`, `groupIds`, or both. It can apply `translation` in world millimeters, a signed `distance` along an axis, and a right-hand `angleDegrees` about that axis. When combined, rotation precedes translation. An axis can be `{ "axisId": "AXIS_ID" }` for a construction axis or `{ "origin": [0,0,0], "direction": [0,0,1] }` in world coordinates. Add `partId` to an explicit axis to express it in that part's local coordinates. References resolve from the target keyframe's poses before each motion. The members receive the same rigid transform at that keyframe. Between saved frames, playback interpolates their individual poses. Place additional keyframes where the path needs to follow an arc.
+
+```json
+[
+  {"type":"frame.add","stepId":"STEP_ID","afterId":"START_ID","frameId":"insert-aligned"},
+  {"type":"frame.transform","stepId":"STEP_ID","frameId":"insert-aligned","motions":[
+    {"groupIds":["INSERT_GROUP_ID"],"axis":{"axisId":"SPINDLE_AXIS_ID"},"distance":18,"angleDegrees":15}
+  ]},
+  {"type":"frame.update","stepId":"STEP_ID","frameId":"insert-aligned","patch":{
+    "duration":0.8,"hidden":[],"xrayPartIds":["SLEEVE_ID"],"camera":{"eye":[40,-50,45],"target":[0,0,0],"up":[0,0,1],"margin":1.1}
+  }}
+]
+```
+
+Append a `note.put` with the same frame ID to set an annotation in that batch.
+
 ## Geometry and annotations
 
 Coordinates use millimeters, Z-up, and quaternions `[x,y,z,w]`. `Part.home` is the imported source pose. `Part.assemblyHome` is an optional authored assembly baseline. `Keyframe.poses` are the displayed world poses for that frame.
 
 Each `GeometryRef` points to an immutable binary file. At `offset`, read `vertices * 3` little-endian Float32 positions, followed by `triangles * 3` little-endian Uint32 indices. Native Fusion imports additionally store `vertices * 3` Float32 surface normals at `normalsOffset`. Geometry is local to the part center. The geometry URL can be fetched from the same server. `shared/surfaces.ts` provides connected-surface selection and cylinder-axis inference in both Node and the interface.
+
+### Query a model or measure a surface
+
+Send JSON to `POST /api/projects/:id/geometry`, or use `npm run cli -- geometry PROJECT_ID query.json`. Each operation accepts an optional `frameId` and `progress` from 0 to 1 for the outgoing keyframe transition. Omitting the frame uses the assembled overview pose. All responses include the project revision. Optionally set `expectedRevision` to pin a query to a revision.
+
+| Operation | Input and result |
+| --- | --- |
+| `find` | Optional case-insensitive `query` searches names, IDs and hierarchy paths. Returns objects, parts with their world poses, and construction axes with their origin, direction and axial extent. Optional `referencePartId` adds each part's column-major `localToReference` matrix and each axis in that part's local coordinates. |
+| `surface` | Pass `partId` and either a zero-based `triangle` index or a 3D `point` with `space: "local"` (default) or `"world"`. A point snaps to the nearest triangle. Returns a part-local anchor, its world point/normal, connected triangles, bounds and area. `angleDegrees` defaults to 25. Pass explicit `triangles` containing the seed to measure a known selection, or `includeMesh: true` to return its individual triangle vertices. A recognizable cylinder also returns the fitted diameter, axis, axial range and maximum radial fit error in millimeters. |
+| `paint` | Uses the same surface selector. Accepts `band: {range: [min, max], axis?}` and optional `clipPlanes`. The result includes a `note.put`-ready `anchor`, actually covered triangles, local bounds, area in mm² and the retained axial range for a band. Zero coverage returns `anchor: null`. |
+
+A band's range is measured along the supplied axis from its origin in millimeters. Omitting the axis uses the fitted cylinder's origin and direction returned from `surface`. Each clip plane keeps `dot(normal, point) + constant <= 0` in the requested `space`. Run one paint query per disjoint region and put the resulting anchors in the same glue note.
+
+```json
+{
+  "operation":"paint",
+  "partId":"SLEEVE_ID",
+  "triangle":42,
+  "band":{"axis":{"axisId":"SPINDLE_AXIS_ID"},"range":[2,12]},
+  "clipPlanes":[{"normal":[1,0,0],"constant":0}]
+}
+```
 
 Annotations store `Anchor.partId`, a local `point`, local `normal`, `triangle` index and `target` (`point`, `part`, `face`, `band`). A surface `region` stores its connected triangles, center, normal, circle radius, cylinder axis and band width. A single glue note may have multiple anchors/regions. A label’s `offset` is in display pixels; it does not replace the 3D attachment.
 
@@ -176,6 +222,30 @@ The numeric values and triangle IDs above illustrate the schema; derive actual v
 
 `SurfaceRegion.clipPlanes` optionally trims a painted region to mating boundaries without changing mesh triangle IDs. Each entry is `{normal: Vec3, constant: number}` in the part's local coordinates; retain points where `dot(normal, point) + constant <= 0`. Use normalized normals. A cylinder band can therefore terminate at an oblique panel seam while excluding its non-contact surface.
 
+## Motion and clearance checks
+
+Send JSON to `POST /api/projects/:id/motion-check`, or use `npm run cli -- motion-check PROJECT_ID check.json`. Select `moving: {partIds?, groupIds?}` and `obstaclePartIds`. Use `stepId` to resolve step groups, and `frameId` to choose a starting keyframe when needed. With only a step ID, motion checks start at that step's Start frame. A check without either ID starts at the assembled overview pose. Add `expectedRevision` to check a specific revision.
+
+| Path `kind` | Motion |
+| --- | --- |
+| `saved` | Check transitions in the selected step through its End or an optional `path.toFrameId`. Use the saved poses of both moving and obstacle parts at each sampled time. |
+| `insertion` | Translate the moving parts by `path.distance` along `path.axis`. Obstacles keep their starting poses. `path.duration` defaults to one second. |
+| `waypoints` | Follow `path.waypoints`, an ordered array of `{duration, poses}` objects. Each pose is an absolute world pose for a moving member. Unspecified poses carry forward and obstacles stay fixed. This accepts a candidate path without saving keyframes. |
+
+```json
+{
+  "frameId":"START_ID",
+  "moving":{"groupIds":["INSERT_GROUP_ID"]},
+  "obstaclePartIds":["SLEEVE_ID","STOP_ID"],
+  "path":{"kind":"insertion","axis":{"axisId":"SPINDLE_AXIS_ID"},"distance":18},
+  "minimumClearance":0.2,
+  "sampleRate":60,
+  "allowedContacts":[["PIN_ID","SLEEVE_ID"]]
+}
+```
+
+The result reports the measured minimum clearance, first violation time, part IDs and closest points in world coordinates. Each pair lists its own minimum and first contact. Surface crossings and contact report zero clearance, with containment also detected for closed meshes. Include a pair under `allowedContacts` to report it without applying the clearance or contact rejection to that pair. Hidden and X-Ray state affect presentation, so supply only the parts you want checked. Each transition uses playback easing and includes both endpoints at the requested sampling density, 30 samples per second by default. Short contacts between samples can require a higher rate. Measurements use the imported triangle meshes.
+
 ## Synchronization
 
 ```powershell
@@ -196,14 +266,51 @@ When a mesh only changes vertex or triangle ordering, the comparison preserves o
 
 ```powershell
 npm run cli -- render PROJECT_ID pdf
+npm run cli -- render PROJECT_ID mp4 xray
 npm run cli -- render-status JOB_ID
 ```
 
-Valid kinds are `png`, `pdf`, `markdown`, `mp4` and `json`. A separate headless Chrome/Edge renderer loads the same document; it does not attach to or control the author’s browser. The result includes a real local path and download URL. MP4 is encoded with FFmpeg as H.264 at 1280 × 720 and 30 fps. Set `MANUALSTUDIO_CHROME` if Chrome/Edge is installed in another location.
+Valid kinds are `png`, `pdf`, `markdown`, `mp4` and `json`. A separate headless Chrome/Edge renderer loads the same document without controlling the author’s browser. The result includes a local path and download URL. Both the GUI and the API render H.264 MP4 at 1920 × 1080 and 60 fps. The renderer uses WebCodecs when H.264 encoding is available and falls back to FFmpeg otherwise. Set `MANUALSTUDIO_CHROME` if Chrome/Edge is installed in another location.
 
-Global video playback includes a 2-second cover and 1.5-second step titles. `Keyframe.duration` on a start frame controls the completed-step hold; durations on later frames control their incoming transitions. `shared/playback.ts` supplies the same plan to the interface and exporter. Encoding uses fixed 30 fps timestamps so slow rendering does not shorten or stretch the video. CLI renders use 1×; interface exports use the selected playback speed. Title durations remain fixed while transitions and holds scale with speed.
+Global video playback includes a 2-second cover and 1.5-second step titles. `Keyframe.duration` on a start frame controls the completed-step hold; durations on later frames control their incoming transitions. `shared/playback.ts` supplies the same plan to the interface and exporter. The exporter samples the timeline at 60 fps independently of rendering speed. CLI renders use 1× and interface exports use the selected playback speed. Title durations remain fixed while transitions and holds scale with speed.
 
-PNG uses the selected session frame if set. Document/video exports traverse all saved frames. To set the visible frame or selection from the CLI:
+An unscoped PNG uses the selected session frame if set. PDF, Markdown and MP4 traverse the saved frames and use the assembly display mode captured when export starts. `POST /api/render` accepts an optional `display` of `xray`, `current` or `all`. Without an override, the job uses the session display, the saved project default or `xray`, in that order. The CLI accepts the same optional value after the export kind.
+
+### Render part of a timeline
+
+Pass `scope` to `POST /api/render`, or give the CLI a JSON file after the display argument.
+
+```powershell
+npm run cli -- render PROJECT_ID png current frame-scope.json
+npm run cli -- render PROJECT_ID mp4 current clip-scope.json
+```
+
+| Scope | PNG | MP4 |
+| --- | --- | --- |
+| `{"stepId":"STEP_ID"}` | Step Start | Step motion and completed-step hold, without title cards |
+| `{"frameId":"FRAME_ID"}` | Saved keyframe, with optional `progress` from 0 to 1 | Outgoing transition, or completed-step hold for an End frame |
+| `{"stepId":"STEP_ID","time":1.2}` | Frame at a time in seconds | |
+| `{"stepId":"STEP_ID","range":[0.4,2.1]}` | | Specified time range in seconds, retaining the source transition easing |
+
+For `time` or `range`, omitting `stepId` selects the global playback timeline including cover and step titles. Scoped PNG frames use the same 1920 × 1080 composition as MP4. Scope jobs capture the document revision when queued and report an error if it changes before the renderer loads it. The scope controls navigation in the independent renderer while the author keeps their editing view. Read file results with `render-status` or `GET /api/render/:jobId`.
+
+### Keyframe X-Ray and default display
+
+Use `frame.update` with `patch: { "xrayPartIds": ["PART_ID"] }` to make those parts translucent in one keyframe. The list replaces the previous list. Use `[]` to restore opaque parts. Each ID must belong to that step. Visibility takes precedence, so a hidden part stays hidden even when its ID is listed. Keyframe X-Ray works in all three display modes and follows the start keyframe until playback reaches the next one.
+
+Use `settings.update` with `patch: { "defaultDisplayMode": "current" }` to open the project's steps in **Current Step Parts Only**. Both settings travel in a project archive. In the GUI, **Assembly options → Default assembly display** saves the project default. Right-click selected parts in the viewport or Assembly list and choose **X-Ray in this keyframe** or **Restore opacity in this keyframe**.
+
+### Label coordinates
+
+```powershell
+npm run --silent cli -- label-layout PROJECT_ID FRAME_ID "0,0.25,0.5,0.75,1" xray
+```
+
+`FRAME_ID` selects the start of a transition. Each progress value ranges from `0` at that frame to `1` at the next frame in the same step. An end frame returns its held layout. The command prints JSON containing the sampled time in seconds, viewport dimensions and the visible tags. Each tag includes its ID, text, `x`, `y`, `width`, `height`, `anchorX` and `anchorY` in CSS pixels, measured from the upper left of the 1920 × 1080 export viewport. These positions include camera projection, authored offsets and automatic avoidance. Export scales the original 1600 × 938 annotation layout uniformly by output height and centers it in the frame. Scoped PNG previews and MP4 frames use the same composition and reported coordinates.
+
+API callers submit `{ "projectId": "PROJECT_ID", "kind": "label-layout", "frameId": "FRAME_ID", "progress": [0, 0.5, 1], "display": "xray" }` to `POST /api/render` and read `result.layout` from `GET /api/render/:jobId`. Keep a note ID consistent across adjacent keyframes to ease its position between them. Adding a keyframe copies its notes with their existing IDs.
+
+To set the visible frame or selection from the CLI:
 
 ```powershell
 npm run cli -- open-step PROJECT_ID STEP_ID

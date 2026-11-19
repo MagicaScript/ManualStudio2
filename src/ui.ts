@@ -4,11 +4,71 @@ export const escape = (value: unknown): string => String(value ?? '').replace(/[
 export function element<T extends HTMLElement = HTMLElement>(selector: string): T { const result = document.querySelector<T>(selector); if (!result) throw new Error(`Missing interface element ${selector}`); return result; }
 export { icon } from './icons.ts';
 
-export function menu(anchor: HTMLElement, items: { label: string; action: () => void | Promise<void>; danger?: boolean; disabled?: boolean }[]): void {
-  document.querySelector('.popup-menu')?.remove(); const popup = document.createElement('div'); popup.className = 'popup-menu';
-  for (const item of items) { const button = document.createElement('button'); button.textContent = item.label; button.disabled = !!item.disabled; if (item.danger) button.className = 'danger'; button.onclick = () => { popup.remove(); Promise.resolve(item.action()).catch(error => toast(String(error))); }; popup.append(button); }
-  const rect = anchor.getBoundingClientRect(); popup.style.left = `${Math.min(rect.left, innerWidth - 250)}px`; popup.style.top = `${Math.min(rect.bottom + 3, innerHeight - items.length * 34 - 16)}px`; document.body.append(popup);
-  setTimeout(() => { document.addEventListener('pointerdown', event => { if (!popup.contains(event.target as Node)) popup.remove(); }, { once: true }); }, 0);
+interface MenuAction { label: string; action: () => void | Promise<void>; danger?: boolean; disabled?: boolean }
+type MenuItem = MenuAction | { label: string; submenu: MenuAction[]; disabled?: boolean };
+
+function positionMenu(popup: HTMLElement, x: number, y: number): void {
+  popup.style.left = `${Math.max(4, Math.min(x, innerWidth - popup.offsetWidth - 4))}px`;
+  popup.style.top = `${Math.max(4, Math.min(y, innerHeight - popup.offsetHeight - 4))}px`;
+}
+
+document.addEventListener('pointerdown', event => {
+  const popup = document.querySelector('.popup-menu');
+  if (popup && event.target instanceof Node && !popup.contains(event.target)) popup.remove();
+}, true);
+
+export function menu(anchor: HTMLElement | { x: number; y: number }, items: MenuItem[]): void {
+  document.querySelector('.popup-menu')?.remove();
+  const popup = document.createElement('div');
+  popup.className = 'popup-menu';
+  const closeSubmenu = (): void => {
+    popup.querySelector('.popup-submenu')?.remove();
+    popup.querySelector('[aria-expanded="true"]')?.setAttribute('aria-expanded', 'false');
+  };
+  const actionButton = (item: MenuAction): HTMLButtonElement => {
+    const button = document.createElement('button');
+    button.textContent = item.label;
+    button.disabled = !!item.disabled;
+    if (item.danger) button.className = 'danger';
+    button.onclick = async () => {
+      popup.remove();
+      try { await item.action(); } catch (error) { toast(String(error)); }
+    };
+    return button;
+  };
+  for (const item of items) {
+    if (!('submenu' in item)) {
+      const button = actionButton(item);
+      button.onpointerenter = closeSubmenu;
+      popup.append(button);
+      continue;
+    }
+    const button = document.createElement('button');
+    button.textContent = item.label;
+    button.disabled = !!item.disabled;
+    button.setAttribute('aria-expanded', 'false');
+    button.className = 'popup-submenu-toggle';
+    const openSubmenu = (): void => {
+      if (button.disabled || button.getAttribute('aria-expanded') === 'true') return;
+      closeSubmenu();
+      const submenu = document.createElement('div');
+      submenu.className = 'popup-menu popup-submenu';
+      item.submenu.forEach(child => submenu.append(actionButton(child)));
+      popup.append(submenu);
+      button.setAttribute('aria-expanded', 'true');
+      const parent = popup.getBoundingClientRect();
+      const x = parent.right + submenu.offsetWidth <= innerWidth - 4 ? parent.right - 1 : parent.left - submenu.offsetWidth + 1;
+      positionMenu(submenu, x, button.getBoundingClientRect().top);
+    };
+    button.onpointerenter = openSubmenu;
+    button.onclick = openSubmenu;
+    popup.append(button);
+  }
+  document.body.append(popup);
+  if (anchor instanceof HTMLElement) {
+    const rect = anchor.getBoundingClientRect();
+    positionMenu(popup, rect.left, rect.bottom + 3);
+  } else positionMenu(popup, anchor.x, anchor.y);
 }
 let toastTimer: ReturnType<typeof setTimeout>;
 function positionCopyConfirmations(): void {

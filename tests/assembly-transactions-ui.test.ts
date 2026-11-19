@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import type { Command, Project } from '../shared/types.ts';
 import { transactionModel } from './fixtures/assembly-transaction.ts';
@@ -13,8 +14,7 @@ import { transactionModel } from './fixtures/assembly-transaction.ts';
 async function painted(page: Page): Promise<void> { await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))); }
 
 test('picker Cancel is transactional, OK is one undo, and GUI/CLI Final keeps the complete model and ordinary steps', { timeout: 120000 }, async () => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined; for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'Chrome is required for the assembly transaction check.');
   const directory = await mkdtemp(path.join(tmpdir(), 'manualstudio-transactions-'));
   const api = spawn(process.execPath, ['--experimental-strip-types', 'server/server.ts'], { cwd: process.cwd(), env: { ...process.env, MANUALSTUDIO_PORT: '0', MANUALSTUDIO_DATA: directory }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

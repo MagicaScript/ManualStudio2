@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { arrangeLabelBoxes, measureLabelBox, wrapLabelText } from '../shared/text-layout.ts';
+import { easeMotion } from '../shared/playback.ts';
+import { labelMotionOffset, planLabelMotion } from '../src/label-motion.ts';
 
 test('assembly note capture preserves explicit instructions and wraps at available width', () => {
   const instruction = 'ALIGN GUIDE RAIL\nTIGHTEN UNTIL FLUSH';
@@ -38,4 +40,28 @@ test('capture-only label layout resolves the mount instruction overlap without m
   }
   const obstructed = arrangeLabelBoxes(labels, 1600, 938, [{ x: 400, y: 580, width: 400, height: 180 }]);
   for (const box of obstructed) assert.ok(box.x >= 812 || box.x + box.width + 12 <= 400 || box.y >= 772 || box.y + box.height + 12 <= 580);
+});
+
+test('a large detour starts settling before the last six video frames', () => {
+  const positions = (progress: number) => {
+    const x = 555 + 250 * easeMotion(progress);
+    return [
+      { id: 'instruction', x: 430, y: 315, width: 350, height: 270, anchorX: 640, anchorY: 490 },
+      { id: 'gauge', x, y: 432, width: 112, height: 36, anchorX: x - 20, anchorY: 462 },
+    ];
+  };
+  const track = planLabelMotion(1.6, 1600, 938, positions).get('gauge');
+  assert.ok(track);
+  const offsets = Array.from({ length: 49 }, (_, index) => labelMotionOffset(track, index / 48));
+  assert.ok(Math.max(...offsets.map(([dx, dy]) => Math.hypot(dx, dy))) > 185);
+  assert.deepEqual(offsets.at(-1), [0, 0]);
+  let tailTravel = 0;
+  offsets.forEach(([dx, dy], index) => {
+    const [note, label] = positions(index / 48), x = label.x + dx, y = label.y + dy;
+    assert.ok(x >= note.x + note.width || x + label.width <= note.x || y >= note.y + note.height || y + label.height <= note.y);
+    if (index > 42) tailTravel += Math.hypot(dx - offsets[index - 1][0], dy - offsets[index - 1][1]);
+  });
+  assert.ok(tailTravel < 55, `Final six frames should not contain the full return from the detour. Travel: ${tailTravel}px.`);
+  const still = planLabelMotion(1.6, 1600, 938, () => positions(0)).get('gauge');
+  assert.deepEqual(labelMotionOffset(still, .5), labelMotionOffset(still, 0));
 });

@@ -1,8 +1,16 @@
-import { frameQueue, interpolateFrames } from './document.ts';
-import type { AssemblyStep, Keyframe, Project } from './types.ts';
+import { findFrame, findStep, frameQueue, interpolateFrames } from './document.ts';
+import type { AssemblyStep, FrameLabels, Keyframe, Project } from './types.ts';
 
 export interface PlaybackSegment { kind: 'cover' | 'title' | 'motion' | 'hold'; duration: number; step: AssemblyStep; from: Keyframe; to: Keyframe }
 export interface PlaybackCard { title: string; subtitle?: string }
+
+export function framePlayback(project: Project, frameId?: string, stepId?: string): PlaybackSegment {
+  const step = stepId ? findStep(project, stepId) : project.steps.find(step => step.frames.some(frame => frame.id === frameId));
+  if (!step) throw new Error(`Unknown keyframe: ${frameId}.`);
+  const from = frameId === undefined ? step.frames[0] : findFrame(step, frameId);
+  const next = step.frames[step.frames.indexOf(from) + 1];
+  return { step, from, to: next ?? from, duration: next?.duration ?? 0, kind: next ? 'motion' : 'hold' };
+}
 
 export function playbackPlan(project: Project, localStepId?: string): PlaybackSegment[] {
   const queue = frameQueue(project, localStepId), segments: PlaybackSegment[] = [];
@@ -29,9 +37,13 @@ export function playbackDuration(segment: PlaybackSegment, speed = 1): number {
   return segment.duration / (segment.kind === 'motion' || segment.kind === 'hold' ? speed : 1);
 }
 
-export function playbackFrame(segment: PlaybackSegment, progress: number): Keyframe {
+export function easeMotion(progress: number): number {
   const t = Math.max(0, Math.min(1, progress));
-  return segment.kind === 'motion' ? interpolateFrames(segment.from, segment.to, t * t * (3 - 2 * t)) : segment.to;
+  return t * t * (3 - 2 * t);
+}
+
+export function playbackFrame(segment: PlaybackSegment, progress: number, defaultLabels?: FrameLabels): Keyframe {
+  return segment.kind === 'motion' ? interpolateFrames(segment.from, segment.to, easeMotion(progress), defaultLabels) : segment.to;
 }
 
 export function playbackCard(project: Project, segment: PlaybackSegment): PlaybackCard | undefined {

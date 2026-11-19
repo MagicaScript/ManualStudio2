@@ -15,19 +15,21 @@ import { createPickerDraft, pickerCommands, stagePickerAssembly, type PickerDraf
 import { Quaternion, Vector3 } from 'three';
 import { Viewport, type NameTarget, type ViewTool } from './viewport.ts';
 import { editInlineName } from './inline-name.ts';
-import { applyCommand, assemblySnapshot, copy, teardownPoses, findFrame, findPart, findStep, frameLabels, frameQueue, homePose, interpolateFrames, mergeCoversWholeModel, uid } from '../shared/document.ts';
-import type { Anchor, AssemblyStep, Command, DisplayMode, FrameLabels, Keyframe, ModelTreeNode, Note, NoteKind, Part, Pose, Project, SessionState, Settings, SyncPlan, Vec3 } from '../shared/types.ts';
+import { applyCommand, assembledPartIds, assemblySnapshot, copy, teardownPoses, findFrame, findPart, findStep, frameLabels, frameQueue, homePose, mergeCoversWholeModel, uid } from '../shared/document.ts';
+import { DEFAULT_DISPLAY_MODE, isDisplayMode, type Anchor, type AssemblyStep, type Command, type DisplayMode, type FrameLabels, type Keyframe, type LabelLayoutRequest, type ModelTreeNode, type Note, type NoteKind, type Part, type Pose, type Project, type SessionState, type Settings, type SyncPlan, type Vec3 } from '../shared/types.ts';
 import { escape as esc, element, icon, menu, modal, pickFile, toast, busy } from './ui.ts';
-import { download, exportProject, type ExportKind } from './export.ts';
+import { download, exportProject, inspectLabelLayout, type ExportKind } from './export.ts';
 import { nextListPart, rangeSelection } from '../shared/selection.ts';
 import { browserRoots, findBrowserNode, modelVisibility, nodeOwnVisibility, nodePartIds } from '../shared/model-tree.ts';
 import { DEFAULT_GLUE_COLOR, DEFAULT_NOTE_COLOR } from '../shared/render-style.ts';
-import { playbackCard, playbackDuration, playbackFrame, playbackPlan, resumeAfterTitle, type PlaybackSegment } from '../shared/playback.ts';
+import { playbackCard, playbackDuration, playbackPlan, resumeAfterTitle, type PlaybackSegment } from '../shared/playback.ts';
+import type { RenderScope } from '../shared/render-scope.ts';
 import { drawPlaybackCard } from './playback-card.ts';
 import type { FusionBridgeState, FusionJobState } from '../server/fusion.ts';
 import { installToolbarTooltips } from './toolbar-tooltips.ts';
 
 const app = element('#app');
+const displayModeOptions = '<option value="xray">X-Ray Other Parts</option><option value="current">Current Step Parts Only</option><option value="all">Show All Parts</option>';
 app.innerHTML = `
 <header class="topbar"><button class="icon" id="fileMenu" title="File">☰</button><span>File</span><button class="icon" id="saveButton" disabled title="Save project">${icon('save')}</button><span class="divider"></span><button class="icon" id="undoButton" title="Undo (Ctrl+Z)">${icon('undo')}</button><button class="icon" id="redoButton" title="Redo (Ctrl+Shift+Z)">${icon('redo')}</button><div class="project-title" id="projectTitle">ManualStudio</div><span class="save-status" id="saveStatus">Ready</span><button class="icon" id="settingsButton" disabled title="Workspace options">${icon('settings')}</button></header>
 <nav class="workspace-tabs"><span class="home-icon">⌂</span><div class="active-tab">${icon('cube')} Assembly</div><select class="project-select" id="projectSelect" aria-label="Project"><option value="">Open a model…</option></select><button id="importButton">Open model</button><button id="importFusion">Fusion cloud</button><button id="syncButton" disabled>Sync model</button><span class="model-caption">ManualStudio · Assembly Workspace</span></nav>
@@ -38,8 +40,15 @@ app.innerHTML = `
 <button class="export-button" id="exportButton" disabled><span>${icon('export')}</span>Export</button>
 <div class="right-stack overall" id="rightStack"><aside class="panel right-tools" id="guide" data-panel-name="Assembly Guide" hidden></aside><aside class="panel assembly-list" id="listPanel" data-panel-name="Assembly list"><header class="panel-header"><span class="row"><button class="icon panel-toggle" id="collapseList" data-panel-toggle="listPanel" title="Collapse Assembly list" aria-expanded="true">${icon('collapsePanel')}</button>Assembly list</span><span class="row"><button class="icon" id="filterButton" title="Show unassembled only">${icon('filter')}</button><button class="icon" id="searchButton" title="Search">${icon('search')}</button></span></header><div class="panel-body" id="listBody"><div class="list-controls" id="searchRow" hidden><input id="partSearch" type="search" placeholder="Search parts or materials…" aria-label="Search parts"><button id="expandAll" title="Expand all">⌄</button></div><div class="list-columns"><span>Object name</span><span>Assemble</span></div><div class="part-tree" id="partTree" role="listbox" aria-label="Assembly list" aria-multiselectable="true" tabindex="0"></div></div></aside></div>
 <div class="navigation"><div class="view-cube"></div><button class="round-button" id="fitAll" title="Fit all (Home)">${icon('fitAll')}</button><button class="round-button" id="fitSelected" title="Fit selection (F)">${icon('fitSelected')}</button></div>
-<div class="playbar" id="playbar" hidden><button id="playButton" title="Play all steps">${icon('play')}</button><select id="playSpeed" aria-label="Playback speed"><option value=".5">0.5×</option><option value="1" selected>1.0×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select><input type="range" id="playSlider" min="0" max="1" value="0" step=".01" aria-label="Assembly playback"><span id="frameNumber" class="small">1</span><button id="previousFrame" title="Previous frame">${icon('previous')}</button><button id="nextFrame" title="Next frame">${icon('next')}</button><select id="displayMode" aria-label="Display mode"><option value="xray">X-Ray Other Parts</option><option value="current">Current Step Parts Only</option><option value="all">Show All Parts</option></select></div>
-<div class="bottom-controls"><span class="shortcut-help"><button id="assemblyShortcutHelp" aria-label="Assembly shortcuts" aria-describedby="assemblyShortcuts">${icon('keyboard')}</button><dl id="assemblyShortcuts" class="assembly-shortcuts" role="tooltip"><dt>Left click</dt><dd>Select object or part</dd><dt>Alt + Left click</dt><dd>Select individual part</dd><dt>Shift + List click</dt><dd>Select a range</dd><dt>Tab / Shift+Tab</dt><dd>Next / previous part</dd><dt>View cube</dt><dd>26 standard directions</dd><dt>Ctrl + 1–9 / S</dt><dd>Reserved for Chrome</dd><dt>M / R</dt><dd>Move / Rotate</dd></dl></span><span id="sectionLabel">Section View</span><button id="resetSectionDirection" hidden>Reset direction</button><input type="range" id="sectionRange" min="0" max="1" step=".01" value="0" aria-label="Section view"><input class="section-value" id="sectionValue" type="number" min="0" max="1" step=".05" value="0.00" aria-label="Section view value"><span>Explosion Ratio</span><input type="range" id="explosionRange" min="1" max="3" step=".01" value="1" aria-label="Explosion ratio"><input class="explosion-value" id="explosionValue" type="number" min="1" max="3" step=".1" value="1.00" aria-label="Explosion ratio value"><span>Selection Mode:</span><select id="selectionMode" aria-label="Selection mode"><option value="part">Part</option><option value="object">Object</option></select></div>
+<div class="playbar" id="playbar" hidden><button id="playButton" title="Play all steps">${icon('play')}</button><select id="playSpeed" aria-label="Playback speed"><option value=".5">0.5×</option><option value="1" selected>1.0×</option><option value="1.5">1.5×</option><option value="2">2.0×</option></select><input type="range" id="playSlider" min="0" max="1" value="0" step=".01" aria-label="Assembly playback"><span id="frameNumber" class="small">1</span><button id="previousFrame" title="Previous frame">${icon('previous')}</button><button id="nextFrame" title="Next frame">${icon('next')}</button><select id="displayMode" aria-label="Display mode">${displayModeOptions}</select></div>
+<div class="bottom-controls">
+  <span class="shortcut-help"><button id="assemblyShortcutHelp" aria-label="Assembly shortcuts" aria-describedby="assemblyShortcuts">${icon('keyboard')}</button>
+  <dl id="assemblyShortcuts" class="assembly-shortcuts" role="tooltip"><dt>Left click</dt><dd>Select object or part</dd><dt>Middle drag</dt><dd>Pan view</dd><dt>Right click on a part</dt><dd>Open assembly menu</dd><dt>Alt + Left click</dt><dd>Select individual part</dd><dt>Shift + List click</dt><dd>Select a range</dd><dt>Tab / Shift+Tab</dt><dd>Next / previous part</dd><dt>View cube</dt><dd>26 standard directions</dd><dt>Ctrl + 1–9 / S</dt><dd>Reserved for Chrome</dd><dt>M / R</dt><dd>Move / Rotate</dd></dl></span>
+  <div class="view-control-group"><span id="sectionLabel">Section View</span><button id="resetSectionDirection" hidden>Reset direction</button><input type="range" id="sectionRange" min="0" max="1" step=".01" value="0" aria-label="Section view"><input class="section-value" id="sectionValue" type="number" min="0" max="1" step=".05" value="0.00" aria-label="Section view value"></div>
+  <div class="view-control-group"><span>Explosion Ratio</span><input type="range" id="explosionRange" min="1" max="3" step=".01" value="1" aria-label="Explosion ratio"><input class="explosion-value" id="explosionValue" type="number" min="1" max="3" step=".1" value="1.00" aria-label="Explosion ratio value"></div>
+  <label class="view-control-group">Selection Mode: <select id="selectionMode" aria-label="Selection mode"><option value="part">Part</option><option value="object">Object</option></select></label>
+  <label class="view-control-group"><input type="checkbox" id="overviewUnassembled" disabled>Unassembled only</label>
+</div>
 <div class="status-text" id="status"></div><div id="emptyState" class="empty-state"><div class="cube-mark">◇</div><h1>Assembly workspace</h1><p>Open a 3MF or native F3D model to create an assembly guide.<br>Fusion cloud imports retain material names and construction axes.</p><button class="primary" id="emptyImport">Open model</button></div></main>`;
 
 installToolbarTooltips([
@@ -50,14 +59,14 @@ installToolbarTooltips([
 
 let project: Project | undefined;
 let stepId: string | null = null, frameId: string | null = null;
-let selected: string[] = [], display: DisplayMode = 'xray', explosion = 1;
+let selected: string[] = [], display: DisplayMode = DEFAULT_DISPLAY_MODE, explosion = 1;
 let selectedAxis: string | undefined;
 let query = '', unassembledOnly = false, activeNoteId: string | undefined;
 let glueOperation: { projectId: string; stepId: string; frameId: string; noteId: string } | undefined;
 let picking: PickerDraft | undefined;
 let undo: Project[] = [], redo: Project[] = [];
 let saving = false, pendingReload = false, suppressSession = false;
-let playing = false, playRaf = 0;
+let playing = false, playRaf = 0, timelinePosition: number | undefined;
 let pausedPlayback: { local: boolean; index: number; progress: number; stepId: string | null } | undefined;
 let activePlaybackPlan: PlaybackSegment[] = [];
 let thumbnailObserver: IntersectionObserver | undefined;
@@ -85,12 +94,15 @@ async function flushNoteDraft(): Promise<void> {
 }
 const getStep = (): AssemblyStep | undefined => project?.steps.find(s => s.id === stepId);
 const getFrame = (): Keyframe | undefined => getStep()?.frames.find(f => f.id === frameId) ?? getStep()?.frames[0];
+const overviewUnassembled = element<HTMLInputElement>('#overviewUnassembled');
 function labelCommand(patch: Partial<FrameLabels>): Command {
   const step = getStep(), frame = getFrame();
   return step && frame?.labels ? { type: 'frame.update', stepId: step.id, frameId: frame.id, patch: { labels: { ...frame.labels, ...patch } } } : { type: 'settings.update', patch };
 }
 const view = new Viewport(element('#viewport'), {
-  select: (id, multiple, individual) => selectPart(id, multiple, individual),
+  select: (id, multiple, individual) => selectPart(id, multiple, individual, true),
+  contextMenu: viewportPartMenu,
+  dragHover: target => highlightStepDrop(stepDropCard(target)),
   axis: id => selectAxis(id),
   drop: (ids, x, y) => void dropParts(ids, x, y).catch(showError),
   pose: poses => { const step = getStep(), frame = getFrame(); editedPoses = undefined; if (step && frame) void commit([{ type: 'frame.update', stepId: step.id, frameId: frame.id, patch: { poses: { ...frame.poses, ...poses }, image: null } }]).catch(showError); else void commit([{ type: 'model.pose', poses }]).catch(showError); },
@@ -126,6 +138,8 @@ async function openProject(id: string): Promise<void> {
   await flushNoteDraft(); await apiQueue; if (sequence !== projectLoadSequence) return;
   stopPlayback(); busy('Loading model…'); const next = await request<Project>(`/api/projects/${id}`); if (sequence !== projectLoadSequence) return; await view.load(next, () => sequence === projectLoadSequence); if (sequence !== projectLoadSequence) return; project = next; stepId = null; frameId = null; selected = []; undo = []; redo = []; activeNoteId = undefined; picking = undefined; explosion = 1;
   element<HTMLInputElement>('#sectionRange').value = '0'; element<HTMLInputElement>('#sectionValue').value = '0.00'; element('#sectionLabel').hidden = false; element('#resetSectionDirection').hidden = true;
+  overviewUnassembled.checked = false;
+  display = next.settings.defaultDisplayMode ?? DEFAULT_DISPLAY_MODE;
   resetModelInteraction(); localStorage.setItem('manualstudio-assembly-project', id); render(); view.view('iso'); view.fit(undefined, .95); busy(); await refreshProjects();
 }
 function resetModelInteraction(): void {
@@ -168,7 +182,11 @@ async function reloadExternal(): Promise<void> {
   }
   undo = []; redo = []; project = next; if (geometryChanged) resetModelInteraction(); render();
 }
-function session(): SessionState { return { stepId, frameId, selected, display, explosion, section: Number(element<HTMLInputElement>('#sectionRange').value), sectionNormal: view.sectionState().normal, frameProgress: getStep() ? Number(element<HTMLInputElement>('#playSlider').value) % 1 : undefined, playing }; }
+function session(): SessionState {
+  const position = timelinePosition ?? Number(element<HTMLInputElement>('#playSlider').value);
+  const source = project && (playing || pausedPlayback) ? frameQueue(project)[Math.floor(position)] : undefined;
+  return { stepId, frameId: source?.frame.id ?? frameId, selected, display, explosion, section: Number(element<HTMLInputElement>('#sectionRange').value), sectionNormal: view.sectionState().normal, frameProgress: getStep() ? position % 1 : undefined, playing };
+}
 function sendSession(): void {
   if (!project || suppressSession) return;
   const id = project.id, snapshot = session();
@@ -189,9 +207,9 @@ function scrubTo(value: number, notify = true): void {
   if (stepId !== first.step.id) setSectionValue(0);
   stepId = first.step.id; frameId = first.frame.id; editedPoses = undefined; activeNoteId = undefined;
   selected = selected.filter(id => first.step.partIds.includes(id));
-  const frame = first.step.id === second.step.id ? interpolateFrames(first.frame, second.frame, position % 1) : first.frame;
-  render(); view.show(project, first.step, frame, display, explosion); view.select(selected); if (frame.camera) view.setCamera(frame.camera);
-  element<HTMLInputElement>('#playSlider').value = String(position); element('#frameNumber').textContent = `${index + 1}/${queue.length}`;
+  const moving = first !== second && first.step.id === second.step.id, target = moving ? second.frame : first.frame;
+  render(); view.showPlayback(project, { kind: moving ? 'motion' : 'hold', duration: target.duration, step: first.step, from: first.frame, to: target }, position % 1, display, explosion); view.select(selected);
+  timelinePosition = position; element<HTMLInputElement>('#playSlider').value = String(position); element('#frameNumber').textContent = `${index + 1}/${queue.length}`;
   if (notify) sendSession();
 }
 function applySessionState(state: Partial<SessionState>): void {
@@ -210,8 +228,10 @@ function canAutoExplode(current: Project, step?: AssemblyStep): boolean {
   return !!step?.partIds.some(id => !findPart(current, id).initiallyAssembled && !step.groups.find(group => group.partIds.includes(id))?.sourceStepId);
 }
 function render(): void {
+  timelinePosition = undefined;
   element('#returnButton').hidden = !getStep(); element('#footerReturn').hidden = !getStep(); element<HTMLButtonElement>('#clearAllSteps').disabled = !project?.steps.length;
   element('#emptyState').hidden = !!project; element<HTMLButtonElement>('#syncButton').disabled = !project; element<HTMLButtonElement>('#addStep').disabled = !project;
+  overviewUnassembled.disabled = !project;
   updateStructureActions();
   document.querySelectorAll<HTMLElement>('[data-tool]').forEach(button => button.classList.toggle('active', button.dataset.tool === view.tool));
   element('#projectTitle').textContent = project?.name ?? 'ManualStudio'; element<HTMLButtonElement>('#undoButton').disabled = !undo.length; element<HTMLButtonElement>('#redoButton').disabled = !redo.length;
@@ -232,7 +252,14 @@ function renderScene(frameOverride?: Keyframe): void {
   if (frame && editedPoses) frame = { ...frame, poses: editedPoses };
   if (picking && step?.id === picking.stepId) {
     const preview = copy(project); pickerCommands(project, picking).forEach(command => applyCommand(preview, command)); const previewStep = findStep(preview, step.id); view.show(preview, previewStep, previewStep.frames.find(f => f.id === frame?.id) ?? previewStep.frames[0], 'xray');
-  } else view.show(project, step, frame, step ? display : 'all', explosion);
+  } else view.show(project, step, frame, step ? display : 'all', explosion, overviewUnassembled.checked);
+  if (!step && overviewUnassembled.checked) {
+    const visible = selected.filter(id => view.meshes.get(id)?.visible);
+    if (visible.length !== selected.length) {
+      selected = visible;
+      updateTreeSelection(); updateSelectionInfo(); sendSession();
+    }
+  }
   view.select(selected); if (selectedAxis) view.selectAxis(selectedAxis); const state = session(); view.setSection(state.section);
 }
 function toggleSearch(kind: 'structure' | 'list'): void {
@@ -297,33 +324,36 @@ async function confirmMerge(): Promise<void> {
   merging = undefined; selected = []; render(); if (getFrame()?.camera) view.setCamera(getFrame()!.camera); sendSession();
   if (stepId) element('#structure').querySelector(`[data-step="${CSS.escape(stepId)}"]`)?.scrollIntoView({ block: 'nearest' });
 }
-function assembled(id: string): boolean { return !!project?.model.parts.find(p => p.id === id)?.initiallyAssembled || !!project?.steps.some(step => !step.final && step.partIds.includes(id)); }
-function assemblyState(ids: string[]): { label: string; warning: boolean } {
+function assemblyState(ids: string[], assembled: ReadonlySet<string>): { label: string; warning: boolean } {
   if (!project || !ids.length) return { label: '', warning: false };
   const steps = project.steps.flatMap((step, i) => !step.final && step.partIds.some(id => ids.includes(id)) ? [i + 1] : []);
-  const used = ids.filter(assembled).length;
+  const used = ids.filter(id => assembled.has(id)).length;
   if (!used) return { label: 'Unassembled', warning: true };
   const label = steps.length === 1 ? `Step${steps[0]}` : steps.join('/');
   return { label: used < ids.length ? `${label || 'Initial'}/Not` : label || 'Assembled', warning: used < ids.length };
 }
-function stateMarkup(ids: string[]): string { const state = assemblyState(ids); return `<span class="part-state ${state.warning ? 'unassembled' : 'assembled'}">${state.label}</span>`; }
 function visibilityButton(node: ModelTreeNode, effective: boolean, label = node.name): string {
   return `<button class="visibility-toggle ${effective ? '' : 'is-hidden'}" data-eye="${esc(node.id)}" aria-label="${effective ? 'Hide' : 'Show'} ${esc(label)}" aria-pressed="${effective}" title="${effective ? 'Hide' : 'Show'} ${esc(label)}">${icon(effective ? 'eye' : 'eyeOff')}</button>`;
 }
-function partRow(part: Part, checkbox = false, node?: ModelTreeNode, visible = true): string {
+function partRow(part: Part, state: string, checkbox: boolean, node: ModelTreeNode, visible: boolean): string {
   const pose = getFrame()?.poses[part.id]; const exploded = pose && new Vector3(...pose.position).distanceTo(new Vector3(...part.home.position)) > .001;
-  return `<div class="part-row ${selected.includes(part.id) ? 'selected' : ''} ${visible ? '' : 'object-hidden'}" data-part="${esc(part.id)}" role="option" aria-selected="${selected.includes(part.id)}" tabindex="-1" draggable="${!checkbox}" title="${esc([part.path, part.materialName && `Material: ${part.materialName}`, part.appearanceName && `Appearance: ${part.appearanceName}`].filter(Boolean).join('\n'))}">${checkbox ? `<input type="checkbox" data-check-part="${esc(part.id)}" ${picking?.ids.has(part.id) ? 'checked' : ''} aria-label="Add ${esc(part.name)}">` : ''}<canvas class="part-thumb" data-thumb="${esc(part.id)}"></canvas><span class="part-name"><span class="part-name-text" ${checkbox ? '' : `data-rename-part="${esc(part.id)}"`}>${esc(part.name)}</span>${part.materialName ? `<small class="part-material">${esc(part.materialName)}</small>` : ''}</span>${project?.settings.showExplosionColumn && !checkbox ? `<button class="explosion-toggle ${exploded ? 'active' : ''}" data-explode-part="${part.id}" title="Toggle explosion state" ${pose ? '' : 'disabled'}>${icon('explosion')}</button>` : ''}${!checkbox && node ? visibilityButton(node, visible, part.name) : ''}${part.sourceStatus === 'removed' ? '<span class="part-state removed">Source removed</span>' : stateMarkup([part.id])}</div>`;
+  return `<div class="part-row ${selected.includes(part.id) ? 'selected' : ''} ${visible ? '' : 'object-hidden'}" data-part="${esc(part.id)}" role="option" aria-selected="${selected.includes(part.id)}" tabindex="-1" draggable="${!checkbox}" title="${esc([part.path, part.materialName && `Material: ${part.materialName}`, part.appearanceName && `Appearance: ${part.appearanceName}`].filter(Boolean).join('\n'))}">${checkbox ? `<input type="checkbox" data-check-part="${esc(part.id)}" ${picking?.ids.has(part.id) ? 'checked' : ''} aria-label="Add ${esc(part.name)}">` : ''}<canvas class="part-thumb" data-thumb="${esc(part.id)}"></canvas><span class="part-name"><span class="part-name-text" ${checkbox ? '' : `data-rename-part="${esc(part.id)}"`}>${esc(part.name)}</span>${part.materialName ? `<small class="part-material">${esc(part.materialName)}</small>` : ''}</span>${project?.settings.showExplosionColumn && !checkbox ? `<button class="explosion-toggle ${exploded ? 'active' : ''}" data-explode-part="${part.id}" title="Toggle explosion state" ${pose ? '' : 'disabled'}>${icon('explosion')}</button>` : ''}${checkbox ? '' : visibilityButton(node, visible, part.name)}${part.sourceStatus === 'removed' ? '<span class="part-state removed">Source removed</span>' : state}</div>`;
 }
 function treeMarkup(checkbox = false): string {
   if (!project) return ''; const current = project, visibility = modelVisibility(current), text = (checkbox ? pickerQuery : query).toLowerCase();
   const parts = new Map(current.model.parts.map(part => [part.id, part]));
   const axes = new Map((current.model.constructionAxes ?? []).map(axis => [axis.id, axis]));
+  const assembled = assembledPartIds(current);
+  const stateMarkup = (ids: string[]): string => {
+    const state = assemblyState(ids, assembled);
+    return `<span class="part-state ${state.warning ? 'unassembled' : 'assembled'}">${state.label}</span>`;
+  };
   const matches = (value: string): boolean => !text || value.toLowerCase().includes(text);
   const renderNode = (node: ModelTreeNode, ancestorMatch = false): string => {
     if (node.partId) {
       const part = parts.get(node.partId); if (!part || checkbox && part.sourceStatus !== 'active') return '';
-      if (!ancestorMatch && !matches(`${part.name} ${part.path} ${part.materialName ?? ''} ${part.appearanceName ?? ''}`) || (checkbox ? pickerUnassembledOnly : unassembledOnly) && assembled(part.id)) return '';
-      return partRow(part, checkbox, node, visibility.parts.get(part.id) ?? true);
+      if (!ancestorMatch && !matches(`${part.name} ${part.path} ${part.materialName ?? ''} ${part.appearanceName ?? ''}`) || (checkbox ? pickerUnassembledOnly : unassembledOnly) && assembled.has(part.id)) return '';
+      return partRow(part, stateMarkup([part.id]), checkbox, node, visibility.parts.get(part.id) ?? true);
     }
     if (node.axisId) {
       const axis = axes.get(node.axisId); if (!axis || checkbox || unassembledOnly || !ancestorMatch && !matches(`${axis.name} ${axis.componentPath}`)) return '';
@@ -388,7 +418,7 @@ function queueThumbnails(): void {
   thumbnailObserver?.disconnect(); thumbnailObserver = new IntersectionObserver(entries => { entries.filter(entry => entry.isIntersecting).forEach(entry => { const canvas = entry.target; if (!(canvas instanceof HTMLCanvasElement) || !project) return; const part = project.model.parts.find(p => p.id === canvas.dataset.thumb); if (part) view.thumbnail(part, canvas); thumbnailObserver?.unobserve(canvas); }); }, { rootMargin: '100px' });
   document.querySelectorAll<HTMLCanvasElement>('[data-thumb]').forEach(canvas => thumbnailObserver?.observe(canvas));
 }
-function selectPart(id: string, multiple = false, individual = false): void {
+function selectPart(id: string, multiple = false, individual = false, fromViewport = false): void {
   selectedAxis = undefined;
   document.querySelectorAll('#partTree .axis-row.selected').forEach(row => row.classList.remove('selected'));
   if (!project) return; const part = findPart(project, id); let ids = [id];
@@ -396,6 +426,10 @@ function selectPart(id: string, multiple = false, individual = false): void {
     const group = getStep()?.groups.find(g => g.partIds.includes(id));
     if (group) ids = group.partIds;
     else if (view.selectionMode === 'object') ids = project.model.parts.filter(p => p.objectId === part.objectId).map(p => p.id);
+  }
+  if (fromViewport && !getStep() && overviewUnassembled.checked) {
+    ids = ids.filter(value => view.meshes.get(value)?.visible);
+    selected = selected.filter(value => view.meshes.get(value)?.visible);
   }
   if (multiple) { const set = new Set(selected); ids.forEach(value => set.has(value) ? set.delete(value) : set.add(value)); selected = [...set]; } else selected = [...ids];
   rangeAnchorId = id; view.select(selected); revealPart(id); updateTreeSelection(); updateSelectionInfo(); sendSession();
@@ -523,22 +557,41 @@ async function addPartsToStep(targetId: string, ids: string[], sourceStepId?: st
     if (sourceStepId) stagePickerAssembly(project, picking, sourceStepId); else ids.forEach(id => picking!.ids.add(id));
     renderPicker(); renderScene(); return;
   }
-  await commit([sourceStepId ? { type: 'step.group', stepId: targetId, sourceStepId } : { type: 'step.members', stepId: targetId, partIds: [...new Set([...findStep(project, targetId).partIds, ...ids])] }]);
+  const projectId = project.id;
+  await commit(current => {
+    if (current.id !== projectId) return [];
+    const step = findStep(current, targetId);
+    if (sourceStepId) return [{ type: 'step.group', stepId: targetId, sourceStepId }];
+    const partIds = [...new Set([...step.partIds, ...ids])];
+    return partIds.length === step.partIds.length ? [] : [{ type: 'step.members', stepId: targetId, partIds }];
+  });
+}
+function stepDropCard(target: EventTarget | null): HTMLElement | undefined {
+  if (merging || !(target instanceof Element)) return;
+  const card = target.closest<HTMLElement>('#structure .step-card[data-step]');
+  if (card && project?.steps.some(step => step.id === card.dataset.step && !step.final)) return card;
+}
+function highlightStepDrop(card?: HTMLElement): void {
+  const previous = document.querySelector('#structure .drop-active');
+  if (previous === card) return;
+  previous?.classList.remove('drop-active');
+  card?.classList.add('drop-active');
 }
 async function dropParts(ids: string[], x: number, y: number): Promise<void> {
-  if (merging) return;
-  if (!project) return; const target = [...document.querySelectorAll<HTMLElement>('[data-drop-step]')].find(item => { const box = item.getBoundingClientRect(); return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; });
-  if (!target) { toast('Drop onto “Click to add objects” in a step card.'); return; }
-  const targetId = target.dataset.dropStep!; const targetStep = findStep(project, targetId);
-  const group = getStep()?.groups.find(g => ids.length === g.partIds.length && ids.every(id => g.partIds.includes(id)));
-  const source = group?.sourceStepId && project.steps.findIndex(s => s.id === group.sourceStepId) < project.steps.indexOf(targetStep) ? group.sourceStepId : undefined;
-  await addPartsToStep(targetId, ids, source);
-  if (picking?.stepId !== targetId) { stepId = targetId; frameId = getStep()?.frames[0].id ?? null; render(); }
+  if (!project || merging || !ids.length) return;
+  const targetId = stepDropCard(document.elementFromPoint(x, y))?.dataset.step;
+  if (!targetId) { toast('Drop the parts onto an assembly step card.'); return; }
+  const origin = getStep(), projectId = project.id;
+  const targetIndex = project.steps.findIndex(step => step.id === targetId);
+  const group = origin?.groups.find(item => ids.length === item.partIds.length && ids.every(id => item.partIds.includes(id)));
+  const source = project.steps.slice(0, targetIndex).find(step => !step.final && step.id === group?.sourceStepId);
+  await addPartsToStep(targetId, ids, source?.id);
+  if (origin && stepId === origin.id && targetId !== origin.id && project?.id === projectId && !picking) openStep(targetId);
 }
 
 function stopPlayback(reset = true): void {
   playing = false; cancelAnimationFrame(playRaf); const button = element<HTMLButtonElement>('#playButton'); button.innerHTML = icon('play'); button.title = 'Play all steps'; button.setAttribute('aria-label', button.title); element('#playbackOverlay').hidden = true;
-  if (reset) { pausedPlayback = undefined; activePlaybackPlan = []; return; }
+  if (reset) { timelinePosition = undefined; pausedPlayback = undefined; activePlaybackPlan = []; return; }
   if (!pausedPlayback) return;
   const next = resumeAfterTitle(activePlaybackPlan, pausedPlayback.index);
   if (next === pausedPlayback.index) return;
@@ -548,7 +601,7 @@ function stopPlayback(reset = true): void {
 function showPlaybackSegment(segment: PlaybackSegment, progress: number): void {
   if (!project) return;
   const changed = stepId !== segment.step.id || frameId !== segment.to.id; stepId = segment.step.id; frameId = segment.to.id;
-  const frame = playbackFrame(segment, progress); view.show(project, segment.step, frame, display); if (frame.camera) view.setCamera(frame.camera);
+  view.showPlayback(project, segment, progress, display);
   const overlay = element<HTMLCanvasElement>('#playbackOverlay'), card = playbackCard(project, segment); overlay.hidden = !card;
   if (card) {
     const scale = devicePixelRatio || 1, width = overlay.clientWidth, height = overlay.clientHeight;
@@ -556,7 +609,8 @@ function showPlaybackSegment(segment: PlaybackSegment, progress: number): void {
     const context = overlay.getContext('2d')!; context.scale(scale, scale); drawPlaybackCard(context, width, height, card);
   }
   const queue = frameQueue(project), target = queue.findIndex(item => item.frame.id === segment.to.id), from = queue.findIndex(item => item.frame.id === segment.from.id);
-  element<HTMLInputElement>('#playSlider').value = String(segment.kind === 'motion' ? from + (target - from) * progress : Math.max(target, 0));
+  timelinePosition = segment.kind === 'motion' ? from + (target - from) * progress : Math.max(target, 0);
+  element<HTMLInputElement>('#playSlider').value = String(timelinePosition);
   element('#frameNumber').textContent = `${Math.max(target + 1, 1)}/${queue.length}`;
   if (changed) { renderStructure(); renderGuide(); }
 }
@@ -633,12 +687,28 @@ function showSync(plan: SyncPlan): void {
     } },
   ]);
 }
-async function doExport(kind: ExportKind, jobId?: string): Promise<void> {
+interface ExportJob { id: string; projectId: string; kind: ExportKind | 'label-layout'; display: DisplayMode; labelLayout?: LabelLayoutRequest; scope?: RenderScope; revision?: number }
+async function doExport(kind: ExportJob['kind'], job?: ExportJob): Promise<void> {
   if (!project) return; stopPlayback(); exporting = true; const snapshot = copy(project); const savedSession = session(), savedCamera = view.cameraState(); const controller = new AbortController();
+  const jobId = job?.id;
   busy('Preparing export…', () => controller.abort());
   try {
-    const result = await exportProject(snapshot, view, kind, text => busy(text, () => controller.abort()), controller.signal, Number(element<HTMLSelectElement>('#playSpeed').value));
-    if (jobId) { const buffer = new Uint8Array(await result.blob.arrayBuffer()); let binary = ''; for (let i = 0; i < buffer.length; i += 32768) binary += String.fromCharCode(...buffer.subarray(i, i + 32768)); await request(`/api/render/${jobId}`, post({ filename: result.filename, mime: result.blob.type, data: btoa(binary) })); }
+    if (job?.revision !== undefined && snapshot.revision !== job.revision) throw new Error('The project changed before the renderer loaded it. Request a new render.');
+    if (kind === 'label-layout') {
+      if (!job?.labelLayout) throw new Error('A keyframe and progress values are required for a label layout query.');
+      const layout = await inspectLabelLayout(snapshot, view, job.labelLayout, job.display, controller.signal);
+      await request(`/api/render/${job.id}`, post({ layout })); return;
+    }
+    const result = await exportProject(snapshot, view, kind, text => busy(text, () => controller.abort()), {
+      display: job?.display ?? savedSession.display,
+      signal: controller.signal,
+      playbackSpeed: Number(element<HTMLSelectElement>('#playSpeed').value),
+      scope: job?.scope,
+    });
+    if (jobId && kind === 'mp4') {
+      const query = new URLSearchParams({ filename: result.filename });
+      await request(`/api/render/${jobId}?${query}`, { method: 'POST', headers: { 'Content-Type': 'video/mp4' }, body: result.blob, signal: controller.signal });
+    } else if (jobId) { const buffer = new Uint8Array(await result.blob.arrayBuffer()); let binary = ''; for (let i = 0; i < buffer.length; i += 32768) binary += String.fromCharCode(...buffer.subarray(i, i + 32768)); await request(`/api/render/${jobId}`, post({ filename: result.filename, mime: result.blob.type, data: btoa(binary) })); }
     else download(result);
     toast(`Exported ${result.filename}`);
   } catch (error) { if (jobId) await request(`/api/render/${jobId}`, post({ error: String(error) })); throw error; }
@@ -656,9 +726,27 @@ function exportSettings(): void {
   ]);
 }
 function workspaceOptions(): void {
-  if (!project) return; modal('Assembly options', `<label><input id="optionAxes" type="checkbox" ${project.settings.showAxes ? 'checked' : ''}>Show world axes</label><label><input id="optionExplode" type="checkbox" ${project.settings.explodeObjects ? 'checked' : ''}>Explode model objects as a whole</label><label><input id="optionExplosionColumn" type="checkbox" ${project.settings.showExplosionColumn ? 'checked' : ''}>Show explosion state column</label><label>Playback strategy<select id="optionStrategy"><option value="sequential">Sequential</option><option value="subassembly">Subassemblies first</option></select></label><label>Surface selection angle<input id="optionAngle" type="number" min="1" max="80" value="${view.pickSettings.angle}">°</label><label><input id="optionSnap" type="checkbox" ${view.snapEnabled ? 'checked' : ''}>Snap move to 1 mm and rotation to 15°</label>`, [
-    { label: 'Cancel', action: root => root.remove() }, { label: 'Apply', primary: true, action: async root => { view.pickSettings.angle = Number(root.querySelector<HTMLInputElement>('#optionAngle')!.value); view.setSnap(root.querySelector<HTMLInputElement>('#optionSnap')!.checked); await commit([{ type: 'settings.update', patch: { showAxes: root.querySelector<HTMLInputElement>('#optionAxes')!.checked, explodeObjects: root.querySelector<HTMLInputElement>('#optionExplode')!.checked, showExplosionColumn: root.querySelector<HTMLInputElement>('#optionExplosionColumn')!.checked, playStrategy: root.querySelector<HTMLSelectElement>('#optionStrategy')!.value as 'sequential' | 'subassembly' } }]); root.remove(); } },
-  ]); element<HTMLSelectElement>('#optionStrategy').value = project.settings.playStrategy;
+  if (!project) return;
+  const defaultDisplay = project.settings.defaultDisplayMode ?? DEFAULT_DISPLAY_MODE;
+  modal('Assembly options', `<label><input id="optionAxes" type="checkbox" ${project.settings.showAxes ? 'checked' : ''}>Show world axes</label><label><input id="optionExplode" type="checkbox" ${project.settings.explodeObjects ? 'checked' : ''}>Explode model objects as a whole</label><label><input id="optionExplosionColumn" type="checkbox" ${project.settings.showExplosionColumn ? 'checked' : ''}>Show explosion state column</label><label>Default assembly display<select id="optionDefaultDisplay">${displayModeOptions}</select></label><label>Playback strategy<select id="optionStrategy"><option value="sequential">Sequential</option><option value="subassembly">Subassemblies first</option></select></label><label>Surface selection angle<input id="optionAngle" type="number" min="1" max="80" value="${view.pickSettings.angle}">°</label><label><input id="optionSnap" type="checkbox" ${view.snapEnabled ? 'checked' : ''}>Snap move to 1 mm and rotation to 15°</label>`, [
+    { label: 'Cancel', action: root => root.remove() }, { label: 'Apply', primary: true, action: async root => {
+      const value = root.querySelector<HTMLSelectElement>('#optionDefaultDisplay')!.value;
+      if (!isDisplayMode(value)) throw new Error('Choose a default assembly display.');
+      view.pickSettings.angle = Number(root.querySelector<HTMLInputElement>('#optionAngle')!.value);
+      view.setSnap(root.querySelector<HTMLInputElement>('#optionSnap')!.checked);
+      await commit([{ type: 'settings.update', patch: {
+        showAxes: root.querySelector<HTMLInputElement>('#optionAxes')!.checked,
+        explodeObjects: root.querySelector<HTMLInputElement>('#optionExplode')!.checked,
+        showExplosionColumn: root.querySelector<HTMLInputElement>('#optionExplosionColumn')!.checked,
+        playStrategy: root.querySelector<HTMLSelectElement>('#optionStrategy')!.value as 'sequential' | 'subassembly',
+        ...(value !== defaultDisplay ? { defaultDisplayMode: value } : {}),
+      } }]);
+      if (value !== defaultDisplay) { display = value; render(); sendSession(); }
+      root.remove();
+    } },
+  ]);
+  element<HTMLSelectElement>('#optionStrategy').value = project.settings.playStrategy;
+  element<HTMLSelectElement>('#optionDefaultDisplay').value = defaultDisplay;
 }
 function labelSettings(): void {
   const step = getStep(), frame = getFrame(); if (!project || !step || !frame) return; const labels = frameLabels(project, frame); modal('Label settings', `<label>Display mode<select id="labelMode"><option value="auto">Auto recommend</option><option value="object">Model objects only</option><option value="part">Model parts only</option></select></label><label>Font size<input id="labelFont" type="number" min="8" max="40" value="${labels.labelFontSize}"></label><label>Camera margin<input id="cameraMargin" type="number" min=".5" max="3" step=".05" value="${view.cameraState().margin}"></label><button id="hideSelectedLabels">Hide selected part labels</button>`, [
@@ -761,6 +849,47 @@ function stepMenu(anchor: HTMLElement, id: string): void {
     { label: 'Insert step after', action: () => commit([{ type: 'step.add', name: 'New Step', after: id }], 'step') },
     { label: project.steps.some(item => item.final) ? 'Refresh final assembly' : 'Create final assembly', action: () => commit([{ type: 'step.final', stepId: id, value: true }]) },
     { label: 'Delete step', danger: true, action: () => deleteStep(id) },
+  ]);
+}
+function frameXrayActions(partIds: string[]) {
+  const projectId = project?.id, step = getStep(), frame = getFrame();
+  if (!projectId || !step || !frame || picking || playing) return [];
+  const members = partIds.filter(id => step.partIds.includes(id));
+  if (!members.length) return [];
+  const xray = new Set(frame.xrayPartIds);
+  const setXray = (enabled: boolean) => commit(current => {
+    if (current.id !== projectId) return [];
+    const latestStep = findStep(current, step.id), latestFrame = findFrame(latestStep, frame.id);
+    const next = new Set(latestFrame.xrayPartIds);
+    const previousCount = next.size;
+    for (const id of members) {
+      if (!latestStep.partIds.includes(id)) continue;
+      if (enabled) next.add(id); else next.delete(id);
+    }
+    if (next.size === previousCount) return [];
+    return [{ type: 'frame.update', stepId: step.id, frameId: frame.id, patch: { xrayPartIds: [...next] } }];
+  });
+  return [
+    { label: 'X-Ray in this keyframe', disabled: members.every(id => xray.has(id)), action: () => setXray(true) },
+    { label: 'Restore opacity in this keyframe', disabled: members.every(id => !xray.has(id)), action: () => setXray(false) },
+  ];
+}
+function viewportPartMenu(id: string, event: PointerEvent): void {
+  if (!project || merging || playing) return;
+  if (!selected.includes(id)) selectPart(id, false, event.altKey, true);
+  const current = getStep(), ordinarySteps = project.steps.filter(step => !step.final);
+  const ids = selected.filter(partId => current || !overviewUnassembled.checked || view.meshes.get(partId)?.visible);
+  const canChooseStep = !current && ids.length > 0;
+  menu({ x: event.clientX, y: event.clientY }, [
+    { label: 'Add to New Step', disabled: !canChooseStep || ordinarySteps.length >= 99, action: async () => {
+      await commit([{ type: 'step.add', parts: ids }], 'step');
+      sendSession();
+    } },
+    { label: 'Add to Current Step', disabled: !current || current.final, action: () => current && addPartsToStep(current.id, ids) },
+    { label: 'Add to Existing Step', disabled: !canChooseStep || !ordinarySteps.length,
+      submenu: ordinarySteps.map((step, index) => ({ label: `Step ${index + 1} · ${step.name}`, action: () => addPartsToStep(step.id, ids) })) },
+    ...frameXrayActions(ids),
+    { label: 'Part properties / rename', action: partProperties },
   ]);
 }
 function clearAllSteps(): void {
@@ -891,6 +1020,7 @@ app.addEventListener('change', event => {
       case 'projectSelect': if (target.value) await openProject(target.value); break;
       case 'displayMode': display = target.value as DisplayMode; renderScene(); sendSession(); break;
       case 'selectionMode': view.selectionMode = target.value as 'part' | 'object'; break;
+      case 'overviewUnassembled': renderScene(); break;
       case 'anchorTarget': view.pickSettings.target = target.value as 'point' | 'part' | 'face' | 'band'; break;
       case 'glueMode': view.pickSettings.region = target.value as 'face' | 'circle' | 'band' | 'brush'; break;
       case 'brushRadius': view.pickSettings.radius = Math.max(.1, Number(target.value)); break;
@@ -949,6 +1079,7 @@ app.addEventListener('contextmenu', event => {
   const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-part]') : null; if (!target?.dataset.part) return; event.preventDefault(); if (!selected.includes(target.dataset.part)) selectPart(target.dataset.part, false, event.altKey);
   menu(target, [
     { label: 'Fit selection', action: () => view.fit(selected, 1.2) }, { label: 'Part properties / rename', action: partProperties },
+    ...frameXrayActions(selected),
     { label: 'Initially assembled', action: () => commit([{ type: 'part.initial', partIds: selected, value: true }]) },
     { label: 'Initially unassembled', action: () => commit([{ type: 'part.initial', partIds: selected, value: false }]) },
     { label: 'Add to current step', disabled: !stepId || getStep()?.final, action: async () => { if (getStep()) await addPartsToStep(stepId!, selected); } },
@@ -965,16 +1096,27 @@ app.addEventListener('dragstart', event => {
   event.dataTransfer.setData('application/manualstudio', JSON.stringify(payload)); event.dataTransfer.effectAllowed = payload.type === 'step' ? 'move' : 'copy';
   if (payload.type === 'step' && payload.id) stepReorder.start(payload.id, event);
 });
-app.addEventListener('dragover', event => { if (stepReorder.active) { stepReorder.over(event); return; } const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-drop-step],[data-step]') : null; if (target && !project?.steps.find(step => step.id === (target.dataset.dropStep ?? target.dataset.step))?.final) { event.preventDefault(); target.classList.add('drop-active'); } });
-app.addEventListener('dragleave', event => { if (stepReorder.active) { stepReorder.leave(event); return; } const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.drop-active') : null; target?.classList.remove('drop-active'); });
-app.addEventListener('dragend', () => { stepReorder.cancel(); document.querySelectorAll('.drop-active').forEach(node => node.classList.remove('drop-active')); });
+app.addEventListener('dragover', event => {
+  if (stepReorder.active) { stepReorder.over(event); return; }
+  if (!event.dataTransfer?.types.includes('application/manualstudio')) return;
+  const card = stepDropCard(event.target);
+  highlightStepDrop(card);
+  if (card) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }
+});
+app.addEventListener('dragleave', event => {
+  if (stepReorder.active) { stepReorder.leave(event); return; }
+  const card = stepDropCard(event.target);
+  if (card && card !== stepDropCard(event.relatedTarget)) highlightStepDrop();
+});
+app.addEventListener('dragend', () => { stepReorder.cancel(); highlightStepDrop(); });
 app.addEventListener('drop', event => {
   if (merging) { event.preventDefault(); return; }
   if (stepReorder.active) { const move = stepReorder.drop(event); if (move) void commit([{ type: 'step.reorder', ...move }]).catch(showError); return; }
-  document.querySelectorAll('.drop-active').forEach(node => node.classList.remove('drop-active')); const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-drop-step],[data-step]') : null; if (!target || !project) return;
+  highlightStepDrop();
+  const targetId = stepDropCard(event.target)?.dataset.step;
+  if (!targetId) return;
   const raw = event.dataTransfer?.getData('application/manualstudio'); if (!raw) return; event.preventDefault();
-  const data: unknown = JSON.parse(raw); if (!data || typeof data !== 'object' || !('type' in data)) return; const targetId = target.dataset.dropStep ?? target.dataset.step!;
-  if (findStep(project, targetId).final) return;
+  const data: unknown = JSON.parse(raw); if (!data || typeof data !== 'object' || !('type' in data)) return;
   const run = async (): Promise<void> => {
     if (data.type === 'assembly' && 'id' in data && typeof data.id === 'string') await addPartsToStep(targetId, [], data.id);
     else if (data.type === 'parts' && 'ids' in data && Array.isArray(data.ids) && data.ids.every((id): id is string => typeof id === 'string')) await addPartsToStep(targetId, data.ids);
@@ -1003,7 +1145,7 @@ document.addEventListener('keydown', event => {
 async function saveArchive(): Promise<void> { if (!project) return; busy('Saving portable project…'); try { const response = await fetch(`/api/projects/${project.id}/archive`); if (!response.ok) throw new Error(await response.text()); download({ blob: await response.blob(), filename: `${project.name.replace(/[<>:"/\\|?*]/g, '-')}.manualstudio` }); } finally { busy(); } }
 async function openArchive(): Promise<void> { const file = await pickFile('.manualstudio'); if (!file) return; busy('Opening project archive…'); try { const next = await request<Project>('/api/open-archive', { method: 'POST', body: file }); await openProject(next.id); } finally { busy(); } }
 function showHelp(): void {
-  modal('ManualStudio controls', `<p><b>3D workspace</b><br>Drag empty space to orbit. Right-drag to pan. Wheel to zoom. Click a part to select it; drag it into a step card. Ctrl-click toggles selection. Shift-click in Assembly list selects a continuous range; Tab / Shift+Tab selects the next / previous part. Click empty space to clear selection. Alt-click cycles through overlapping parts and selects an individual part inside a subassembly.</p><p><b>Names</b><br>Double-click a name in the Assembly list or a 3D name tag to rename it in place. Enter or clicking away saves; Escape cancels. Middle-click the list row or name tag to focus it. Right-click a 3D name tag to copy its full name.</p><p><b>3D navigator</b><br>Click a face, edge or corner for one of 26 preset directions. Drag the cube to orbit with Z up. Chrome keeps Ctrl+1–9 for tab switching and Ctrl+S for Save page. ManualStudio does not intercept these shortcuts. Use the view cube for standard directions and Save update to record a frame.</p><p><b>Shortcuts</b><br>M Move · R Rotate · F Fit selected · Home Fit all · Esc Select · Space Play / Pause · ← / → Previous / Next frame · Ctrl+Z Undo · Ctrl+Y or Ctrl+Shift+Z Redo</p><p><b>Surface tools</b><br>Connection types and notes attach to 3D points, parts, connected faces or cylindrical bands. Glue supports a whole face, circular patch, multiple bands and brush strokes. Select Remove to animate support removal.</p><p><b>Agent API</b><br>Local endpoint: <code>http://127.0.0.1:4189/api</code><br>Command line: <code>npm run cli -- help</code><br>Commands update the same saved project and refresh this workspace automatically. See <code>Agent Guide.md</code> in the application folder.</p><p><a href="https://github.com/bambulab/BambuStudio/tree/v02.09.01.70/src/slic3r/GUI/Overview" target="_blank" rel="noreferrer">Bambu Studio Assembly source reference</a></p>`, [{ label: 'Close', primary: true, action: root => root.remove() }]);
+  modal('ManualStudio controls', `<p><b>3D workspace</b><br>Drag empty space to orbit. Middle-drag to pan. Wheel to zoom. Click a part to select it. Right-click a part to select it and open the assembly menu. Drop parts anywhere on an assembly step card. In Overall preview, you can keep adding parts without changing views. Use Unassembled only to show parts that have not been added to an operation. Ctrl-click toggles selection. Shift-click in Assembly list selects a continuous range; Tab / Shift+Tab selects the next / previous part. Click empty space to clear selection. Alt-click cycles through overlapping parts and selects an individual part inside a subassembly.</p><p><b>Names</b><br>Double-click a name in the Assembly list or a 3D name tag to rename it in place. Enter or clicking away saves; Escape cancels. Middle-click the list row or name tag to focus it. Right-click a 3D name tag to copy its full name.</p><p><b>3D navigator</b><br>Click a face, edge or corner for one of 26 preset directions. Drag the cube to orbit with Z up. Chrome keeps Ctrl+1–9 for tab switching and Ctrl+S for Save page. ManualStudio does not intercept these shortcuts. Use the view cube for standard directions and Save update to record a frame.</p><p><b>Shortcuts</b><br>M Move · R Rotate · F Fit selected · Home Fit all · Esc Select · Space Play / Pause · ← / → Previous / Next frame · Ctrl+Z Undo · Ctrl+Y or Ctrl+Shift+Z Redo</p><p><b>Surface tools</b><br>Connection types and notes attach to 3D points, parts, connected faces or cylindrical bands. Glue supports a whole face, circular patch, multiple bands and brush strokes. Select Remove to animate support removal.</p><p><b>Agent API</b><br>Local endpoint: <code>http://127.0.0.1:4189/api</code><br>Command line: <code>npm run cli -- help</code><br>Commands update the same saved project and refresh this workspace automatically. See <code>Agent Guide.md</code> in the application folder.</p><p><a href="https://github.com/bambulab/BambuStudio/tree/v02.09.01.70/src/slic3r/GUI/Overview" target="_blank" rel="noreferrer">Bambu Studio Assembly source reference</a></p>`, [{ label: 'Close', primary: true, action: root => root.remove() }]);
 }
 const events = new EventSource('/api/events');
 events.addEventListener('project', event => { const data = JSON.parse((event as MessageEvent<string>).data) as { projectId: string; revision: number }; if (data.projectId !== project?.id || data.revision === project.revision) return; if (saving || exporting) pendingReload = true; else void reloadExternal().catch(showError); });
@@ -1012,7 +1154,7 @@ events.addEventListener('session', event => {
   suppressSession = true;
   try { applySessionState(state); } finally { suppressSession = false; }
 });
-events.addEventListener('render', event => { const job = JSON.parse((event as MessageEvent<string>).data) as { id: string; projectId: string; kind: ExportKind }; if (job.projectId === project?.id) void doExport(job.kind, job.id).catch(showError); });
+events.addEventListener('render', event => { const job = JSON.parse((event as MessageEvent<string>).data) as ExportJob; if (job.projectId === project?.id) void doExport(job.kind, job).catch(showError); });
 interface ManualStudioApi { getProject(): Project | undefined; getSession(): SessionState; command(commands: Command[]): Promise<void>; openStep(id: string | null): void; selectParts(ids: string[]): void; capture(): string; view: Viewport; export(kind: ExportKind): Promise<void>; }
 declare global { interface Window { manualStudio: ManualStudioApi } }
 window.manualStudio = { getProject: () => project && copy(project), getSession: session, command: commands => commit(commands), openStep, selectParts: ids => { selected = ids; selectedAxis = undefined; view.select(ids); if (ids[0]) revealPart(ids[0]); updateTreeSelection(); updateSelectionInfo(); sendSession(); }, capture: () => view.capture().toDataURL(), view, export: kind => doExport(kind) };
@@ -1021,8 +1163,11 @@ void (async () => {
   if (initial) await openProject(initial.id); else render();
   const jobId = params.get('render'); if (jobId && project) {
     try {
-      const state = await request<Partial<SessionState> | null>(`/api/projects/${project.id}/session`); if (state) applySessionState(state);
-      const job = await request<{ kind: ExportKind }>(`/api/render/${jobId}`); await doExport(job.kind, jobId);
+      const job = await request<ExportJob>(`/api/render/${jobId}`);
+      if (!job.scope) {
+        const state = await request<Partial<SessionState> | null>(`/api/projects/${project.id}/session`); if (state) applySessionState(state);
+      }
+      await doExport(job.kind, job);
     } finally { document.documentElement.dataset.renderComplete = 'true'; }
   }
 })().catch(showError);

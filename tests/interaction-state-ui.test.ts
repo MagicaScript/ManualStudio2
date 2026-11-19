@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import { zipSync, strToU8 } from 'fflate';
 import type { Command, Project } from '../shared/types.ts';
@@ -48,9 +49,7 @@ async function surfacePoints(page: Page, partId: string): Promise<{ x: number; y
 }
 
 test('selection, project switching and queued glue operations retain their intended context', { timeout: 90000 }, async context => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'Interaction regression requires installed Chrome.');
   const directory = await mkdtemp(path.join(tmpdir(), 'manualstudio-interaction-state-'));
   const api = spawn(process.execPath, ['--experimental-strip-types', 'server/server.ts'], { cwd: process.cwd(), env: { ...process.env, MANUALSTUDIO_PORT: '0', MANUALSTUDIO_DATA: directory }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -132,7 +131,7 @@ test('selection, project switching and queued glue operations retain their inten
         assert.equal(project.steps[0].frames[0].notes.length, 1); assert.equal(project.steps[0].frames[0].notes[0].id, initialNoteId); assert.equal(project.steps[0].frames[0].notes[0].anchors.length, 4);
 
         pending = hold(); await click(); await pending.request;
-        await page.locator('#editNoteColor').fill('#a1b2c3'); await page.locator('#editNoteColor').dispatchEvent('change');
+        await page.locator('#editNoteColor').fill('#a1b2c3');
         await page.locator('[data-close-note]').click(); await page.locator('.note-editor').waitFor({ state: 'detached' }); await painted(page);
         const label = await page.locator(`.surface-note[data-note-id="${initialNoteId}"]`).boundingBox(); assert.ok(label);
         assert.equal(await page.evaluate(label => document.elementFromPoint(label.x + label.width / 2, label.y + label.height / 2)?.closest<HTMLElement>('.surface-note')?.dataset.noteId, label), initialNoteId, 'The drag target must be an exposed label.');
@@ -143,7 +142,7 @@ test('selection, project switching and queued glue operations retain their inten
         assert.equal(project.steps[0].frames[0].notes[0].color, '#a1b2c3'); assert.notDeepEqual(project.steps[0].frames[0].notes[0].offset, [30, -40]);
 
         await page.locator('[data-tool="glue"]').click();
-        await page.locator('#newGlueNote').click(); await page.locator('#noteColor').fill('#6588a9'); await page.locator('#noteColor').dispatchEvent('change');
+        await page.locator('#newGlueNote').click(); await page.locator('#noteColor').fill('#6588a9');
         pending = hold(); await click(); await pending.request; await page.locator('#newGlueNote').click(); await click(1); pending.release(); await revision(project.revision + 2); project = await read(project.id);
         assert.deepEqual(project.steps[0].frames[0].notes.map(note => note.anchors.length), [4, 1, 1], 'New region set starts a distinct operation even while an earlier operation is saving.');
         assert.deepEqual(project.steps[0].frames[0].notes.slice(1).map(note => note.color), ['#6588a9', '#6588a9']);

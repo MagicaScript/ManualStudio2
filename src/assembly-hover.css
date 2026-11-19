@@ -73,10 +73,15 @@
   color: #d5e8db;
 }
 
-.left-panel .step-drop:not(.drop-active):is(:hover, :focus-visible) {
+.left-panel .step-card:not(.drop-active) .step-drop:is(:hover, :focus-visible) {
   background: #383e3c;
   border-color: #8b9c92;
   color: var(--assembly-hover-text);
+}
+.left-panel .step-card.drop-active .step-drop {
+  background: #234e34;
+  border-color: #00d65a;
+  color: #d1f8dd;
 }
 
 .left-panel .insert-step-gap button:enabled:is(:hover, :focus-visible) {

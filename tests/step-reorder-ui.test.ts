@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import { zipSync, strToU8 } from 'fflate';
 import type { Project } from '../shared/types.ts';
@@ -24,9 +25,7 @@ async function startDrag(page: Page, stepId: string): Promise<void> {
 }
 
 test('native dragging opens insertion space, cancels over the original card, and moves the last step to the first gap', { timeout: 60000 }, async context => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The step-reorder interaction check requires installed Chrome.');
   const directory = await mkdtemp(path.join(tmpdir(), 'manualstudio-step-reorder-'));
   const api = spawn(process.execPath, ['--experimental-strip-types', 'server/server.ts'], {

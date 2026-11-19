@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { findBrowser } from '../tools/dependencies.ts';
 import { createServer, type ViteDevServer } from 'vite';
 import { zipSync, strToU8 } from 'fflate';
 import type { Camera, Project, Vec3 } from '../shared/types.ts';
@@ -18,9 +19,7 @@ async function applyEditor(page: Page): Promise<void> {
 }
 
 test('GUI editors author precise axis moves, frames, label positions and clipped glue regions', { timeout: 60000 }, async () => {
-  const candidates = [process.env.MANUALSTUDIO_CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'];
-  let executablePath: string | undefined;
-  for (const candidate of candidates) if (candidate && await access(candidate).then(() => true, () => false)) { executablePath = candidate; break; }
+  const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The authoring controls require installed Chrome.');
   const directory = await mkdtemp(path.join(tmpdir(), 'manualstudio-assembly-editors-'));
   const api = spawn(process.execPath, ['--experimental-strip-types', 'server/server.ts'], { cwd: process.cwd(), env: { ...process.env, MANUALSTUDIO_PORT: '0', MANUALSTUDIO_DATA: directory }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
