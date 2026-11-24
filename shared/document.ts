@@ -4,10 +4,14 @@ import { isDisplayMode } from './types.ts';
 import type { AssemblyStep, Camera, Command, FrameLabels, Keyframe, Model, Part, Pose, Project, Subassembly, Vec3 } from './types.ts';
 import { browserRoots, findBrowserNode } from './model-tree.ts';
 import { transformPoses } from './assembly-motion.ts';
+import { curveOffset, curvePose, curveScalar, curveVector, type MotionCurve } from './motion-curve.ts';
+import { solveMotionEndpoints, validateIncomingMotion } from './motion-tracks.ts';
 
 export const uid = (prefix: string): string => `${prefix}-${crypto.randomUUID()}`;
 export const copy = <T>(value: T): T => structuredClone(value);
 export const homePose = (part: Part): Pose => part.assemblyHome ?? part.home;
+export const MAX_ORDINARY_STEPS = 255;
+const stepLimitMessage = `No more than ${MAX_ORDINARY_STEPS} assembly steps plus the final assembly are allowed.`;
 export function emptyProject(model: Model): Project {
   return { version: 1, id: uid('project'), name: model.name, revision: 0, model, steps: [], updatedAt: new Date().toISOString(),
     settings: { showLabels: false, labelMode: 'auto', labelFontSize: 13, showAxes: false, showConstructionAxes: true, constructionAxisVisibility: {}, showExplosionColumn: false,
@@ -226,7 +230,7 @@ export function applyCommand(project: Project, command: Command): string | undef
       break;
     }
     case 'step.add': {
-      if (project.steps.filter(step => !step.final).length >= 99) throw new Error('No more than 99 assembly steps plus the final assembly are allowed.');
+      if (project.steps.filter(step => !step.final).length >= MAX_ORDINARY_STEPS) throw new Error(stepLimitMessage);
       const step = makeStep(project, command.name ?? 'Install parts', command.parts);
       const end = final ? project.steps.indexOf(final) : project.steps.length;
       const index = Math.min(end, command.before ? project.steps.indexOf(findStep(project, command.before)) : command.after ? project.steps.indexOf(findStep(project, command.after)) + 1 : end);
@@ -245,18 +249,32 @@ export function applyCommand(project: Project, command: Command): string | undef
       project.steps.splice(before ? project.steps.findIndex(item => item.id === before) : project.steps.length, 0, step); break;
     }
     case 'step.copy': {
-      if (project.steps.filter(step => !step.final).length >= 99) throw new Error('No more than 99 assembly steps plus the final assembly are allowed.');
+      if (project.steps.filter(step => !step.final).length >= MAX_ORDINARY_STEPS) throw new Error(stepLimitMessage);
       const source = findStep(project, command.stepId); if (source.final) throw new Error('Final assembly cannot be copied or inherited as an operation.');
       const next = command.inherit ? makeStep(project, `${source.name} — next`) : copy(source);
       next.id = uid('step'); next.final = false;
-      if (!command.inherit) { next.name += ' copy'; next.frames.forEach(f => { f.id = uid('frame'); f.notes.forEach(n => { n.id = uid('note'); }); }); next.groups.forEach(g => { g.id = uid('group'); }); }
+      if (!command.inherit) {
+        next.name += ' copy';
+        const groupIds = new Map(next.groups.map(group => [group.id, uid('group')]));
+        next.groups.forEach(group => { group.id = groupIds.get(group.id)!; });
+        for (const frame of next.frames) {
+          frame.id = uid('frame'); frame.notes.forEach(note => { note.id = uid('note'); });
+          frame.incomingMotion?.forEach(track => {
+            const selections = track.kind === 'four-bar' ? [track.input, track.output, track.coupler] : [track];
+            for (const members of selections) if (members.groupIds) members.groupIds = members.groupIds.map(id => groupIds.get(id) ?? id);
+          });
+        }
+      }
       project.steps.splice(project.steps.indexOf(source) + 1, 0, next);
       if (command.inherit) { addGroup(project, next, source); next.inheritedFrom = source.id; }
       result = next.id; break;
     }
     case 'step.merge': {
-      const sources = mergeSources(project, command.stepIds), complete = mergeCoversWholeModel(project, sources), merged = mergedEndpoints(project, sources);
-      if ((!complete || final) && project.steps.filter(step => !step.final).length >= 99) throw new Error(complete ? 'Preserving the previous Final assembly requires an available ordinary-step slot (maximum 99).' : 'No more than 99 assembly steps plus the final assembly are allowed.');
+      const sources = mergeSources(project, command.stepIds), complete = mergeCoversWholeModel(project, sources);
+      if ((!complete || final) && project.steps.filter(step => !step.final).length >= MAX_ORDINARY_STEPS) {
+        throw new Error(complete ? `Preserving the previous Final assembly requires an available ordinary-step slot (maximum ${MAX_ORDINARY_STEPS}).` : stepLimitMessage);
+      }
+      const merged = mergedEndpoints(project, sources);
       if (complete) {
         merged.final = true; merged.name = 'Final assembly';
         if (final) final.final = false;
@@ -338,7 +356,7 @@ export function applyCommand(project: Project, command: Command): string | undef
       const step = findStep(project, command.stepId);
       const source = findFrame(step, command.afterId); const frame = copy(source);
       if (command.frameId && project.steps.some(step => step.frames.some(frame => frame.id === command.frameId))) throw new Error(`Keyframe ID is already in use: ${command.frameId}.`);
-      frame.id = command.frameId ?? uid('frame'); frame.kind = 'transition'; frame.name = 'Transition frame'; delete frame.image;
+      frame.id = command.frameId ?? uid('frame'); frame.kind = 'transition'; frame.name = 'Transition frame'; delete frame.image; delete frame.passThrough; delete frame.incomingMotion;
       step.frames.splice(Math.min(step.frames.indexOf(source) + 1, step.frames.length - 1), 0, frame); result = frame.id; break;
     }
     case 'frame.delete': {
@@ -360,6 +378,21 @@ export function applyCommand(project: Project, command: Command): string | undef
       frame.poses = transformPoses(command.motions, frame.poses, parts, project.model.constructionAxes ?? [], step);
       delete frame.image;
       if (step.final && frame.kind === 'end') for (const id of step.partIds) parts.get(id)!.assemblyHome = copy(frame.poses[id]);
+      break;
+    }
+    case 'frame.motion': {
+      const step = findStep(project, command.stepId), frame = findFrame(step, command.frameId);
+      const previous = step.frames[step.frames.indexOf(frame) - 1];
+      if (!previous || frame.kind === 'start') throw new Error('The start keyframe has no incoming motion.');
+      if (!command.motions.length) { delete frame.incomingMotion; break; }
+      const { startChanges, endChanges } = solveMotionEndpoints(project, step, previous, command.motions, command.alignStart ?? false);
+      if (startChanges.length) {
+        Object.assign(previous.poses, Object.fromEntries(startChanges));
+        delete previous.image;
+      }
+      Object.assign(frame.poses, Object.fromEntries(endChanges));
+      frame.incomingMotion = copy(command.motions); delete frame.image;
+      if (step.final && frame.kind === 'end') for (const [id, pose] of endChanges) findPart(project, id).assemblyHome = copy(pose);
       break;
     }
     case 'frame.cameraAll': {
@@ -394,27 +427,70 @@ export function interpolateCamera(start: Camera, end: Camera, t: number): Camera
     target: new Vector3(...start.target).lerp(new Vector3(...end.target), t).toArray(),
     up: new Vector3(...start.up).lerp(new Vector3(...end.up), t).normalize().toArray() };
 }
-export function interpolateFrames(from: Keyframe, to: Keyframe, t: number, defaultLabels?: FrameLabels): Keyframe {
+
+export interface FrameInterpolation {
+  fraction: number;
+  curve?: MotionCurve;
+  before?: Keyframe;
+  after?: Keyframe;
+  rigidPose?: (id: string) => Pose | undefined;
+}
+
+export function interpolatedFramePose(from: Keyframe, to: Keyframe, id: string, { fraction, curve, before, after, rigidPose }: FrameInterpolation): Pose | undefined {
+  if (fraction <= 0) return from.poses[id];
+  const end = to.poses[id];
+  if (fraction >= 1 || !end) return end;
+  const solved = rigidPose?.(id);
+  if (solved) return solved;
+  const start = from.poses[id] ?? end;
+  return curve ? curvePose(curve, start, end, before?.poses[id], after?.poses[id]) : interpolatePose(start, end, fraction);
+}
+
+export function interpolatedFrameCamera(from: Keyframe, to: Keyframe, { fraction, curve, before, after }: FrameInterpolation, fallback?: Camera): Camera | undefined {
+  const start = from.camera ?? fallback, end = to.camera ?? fallback;
+  if (fraction <= 0 || start === end) return start;
+  if (fraction >= 1) return end;
+  if (!start || !end) return fraction < .5 ? start : end;
+  if (!curve) return interpolateCamera(start, end, fraction);
+  const previous = before && (before.camera ?? fallback), next = after && (after.camera ?? fallback);
+  return {
+    margin: curveScalar(curve, start.margin, end.margin, previous?.margin, next?.margin),
+    eye: curveVector(curve, start.eye, end.eye, previous?.eye, next?.eye),
+    target: curveVector(curve, start.target, end.target, previous?.target, next?.target),
+    up: new Vector3(...curveVector(curve, start.up, end.up, previous?.up, next?.up)).normalize().toArray(),
+  };
+}
+
+export function interpolateFrames(from: Keyframe, to: Keyframe, sample: number | FrameInterpolation, defaultLabels?: FrameLabels): Keyframe {
+  const blend = typeof sample === 'number' ? { fraction: sample } : sample;
+  const { fraction: t, curve, before, after } = blend;
   if (t <= 0) return copy(from);
   if (t >= 1) return copy(to);
   const firstHalf = t < .5, frame = copy(firstHalf ? from : to);
-  frame.poses = Object.fromEntries(Object.entries(to.poses).map(([id, pose]) => [id, interpolatePose(from.poses[id] ?? pose, pose, t)]));
+  frame.poses = Object.fromEntries(Object.entries(to.poses).map(([id, end]) => [id, interpolatedFramePose(from, to, id, blend) ?? end]));
   frame.hidden = [...(t < .999 ? from.hidden : to.hidden)];
   if (from.xrayPartIds) frame.xrayPartIds = [...from.xrayPartIds];
   else delete frame.xrayPartIds;
-  if (from.camera && to.camera) frame.camera = interpolateCamera(from.camera, to.camera, t);
-  const otherNotes = new Map((firstHalf ? to : from).notes.filter(note => !note.hidden).map(note => [note.id, note]));
+  frame.camera = interpolatedFrameCamera(from, to, blend);
+  if (!frame.camera) delete frame.camera;
+  const noteOffsets = (keyframe: Keyframe | undefined) => new Map(keyframe?.notes.filter(note => !note.hidden).map(note => [note.id, note.offset]));
+  const otherNotes = noteOffsets(firstHalf ? to : from), priorNotes = noteOffsets(before), nextNotes = noteOffsets(after);
+  const offset = (start: readonly [number, number], end: readonly [number, number], previous?: readonly [number, number], next?: readonly [number, number]) =>
+    curve ? curveOffset(curve, start, end, previous, next) : interpolateOffset(start, end, t);
   for (const note of frame.notes) {
     const other = otherNotes.get(note.id);
     if (note.hidden || !other) continue;
-    note.offset = firstHalf ? interpolateOffset(note.offset, other.offset, t) : interpolateOffset(other.offset, note.offset, t);
+    const [start, end] = firstHalf ? [note.offset, other] : [other, note.offset];
+    note.offset = offset(start, end, priorNotes.get(note.id), nextNotes.get(note.id));
   }
   const startLabels = from.labels ?? defaultLabels, endLabels = to.labels ?? defaultLabels;
   if (startLabels && endLabels && startLabels !== endLabels) {
     const ids = new Set([...Object.keys(startLabels.labelOffsets), ...Object.keys(endLabels.labelOffsets)]);
     const { showLabels, labelMode, labelFontSize, hiddenLabels } = firstHalf ? startLabels : endLabels;
+    const priorLabels = before && (before.labels ?? defaultLabels), nextLabels = after && (after.labels ?? defaultLabels);
     frame.labels = { showLabels, labelMode, labelFontSize, hiddenLabels: [...hiddenLabels], labelOffsets: Object.fromEntries([...ids].map(id => [id,
-      interpolateOffset(startLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET, endLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET, t)])) };
+      offset(startLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET, endLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET,
+        priorLabels && (priorLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET), nextLabels && (nextLabels.labelOffsets[id] ?? DEFAULT_LABEL_OFFSET))])) };
   }
   return frame;
 }
@@ -434,11 +510,17 @@ export function validateProject(project: Project): string[] {
     if (step.partIds.some(id => !ids.has(id))) errors.push(`${step.name}: unknown part.`);
     if (new Set(step.partIds).size !== step.partIds.length) errors.push(`${step.name}: repeated part.`);
     if (step.frames[0]?.kind !== 'start' || step.frames.at(-1)?.kind !== 'end') errors.push(`${step.name}: start and end frames are required.`);
-    for (const frame of step.frames) {
+    for (const [index, frame] of step.frames.entries()) {
       for (const id of step.partIds) if (!poseValid(frame.poses[id])) errors.push(`${frame.name}: invalid pose for ${id}.`);
       if (frame.hidden.some(id => !step.partIds.includes(id))) errors.push(`${frame.name}: unknown hidden part.`);
       if (frame.xrayPartIds !== undefined && (!Array.isArray(frame.xrayPartIds) || frame.xrayPartIds.some(id => !step.partIds.includes(id)))) errors.push(`${frame.name}: X-Ray part IDs must belong to this step.`);
       if (!(frame.duration > 0 && Number.isFinite(frame.duration))) errors.push('Frame duration must be positive.');
+      if (frame.passThrough !== undefined && typeof frame.passThrough !== 'boolean') errors.push('Pass-through must be true or false.');
+      if (frame.passThrough === true && frame.kind !== 'transition') errors.push('Only transition keyframes can be pass-through.');
+      if (frame.incomingMotion !== undefined) {
+        try { validateIncomingMotion(project, step, step.frames[index - 1], frame); }
+        catch (error) { errors.push(`${step.name} · ${frame.name}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       for (const note of frame.notes) for (const anchor of note.anchors) {
         if (!step.partIds.includes(anchor.partId) || !finite(anchor.point, 3) || !finite(anchor.normal, 3)) errors.push(`${note.id}: invalid surface anchor.`);
       }

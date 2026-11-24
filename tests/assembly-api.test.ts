@@ -5,13 +5,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { BoxGeometry, BufferAttribute, BufferGeometry, CylinderGeometry } from 'three';
+import { BoxGeometry, BufferAttribute, BufferGeometry, CylinderGeometry, Quaternion, Vector3 } from 'three';
 import { strToU8, zipSync } from 'fflate';
 import { chromium } from 'playwright-core';
 import { createServer } from 'vite';
 import { playbackFrame } from '../shared/playback.ts';
 import { renderImageSample, renderVideoSlices } from '../shared/render-scope.ts';
-import type { Anchor, Command, Project } from '../shared/types.ts';
+import type { Anchor, Command, Pose, Project, Vec3 } from '../shared/types.ts';
 import { findBrowser, mediaCommand } from '../tools/dependencies.ts';
 
 function sleeveGeometry(): BufferGeometry {
@@ -123,7 +123,7 @@ test('assembly API resolves surfaces, clips paint, checks insertion and previews
     const commands: Command[] = [
       { type: 'frame.add', stepId: second.id, afterId: start.id, frameId },
       { type: 'frame.transform', stepId: second.id, frameId, motions: [{ groupIds: [groupId], axis: { axisId }, angleDegrees: 90, distance: 3 }] },
-      { type: 'frame.update', stepId: second.id, frameId, patch: { camera: { eye: [40, -50, 45], target: [0, 0, 0], up: [0, 0, 1], margin: 1.1 }, xrayPartIds: [sleeve.id], hidden: [], duration: .3 } },
+      { type: 'frame.update', stepId: second.id, frameId, patch: { camera: { eye: [40, -50, 45], target: [0, 0, 0], up: [0, 0, 1], margin: 1.1 }, xrayPartIds: [sleeve.id], hidden: [], duration: .3, passThrough: true } },
       { type: 'note.put', stepId: second.id, frameId, note: { id: 'painted-band', kind: 'glue', text: 'Coat the sleeve band.', color: '#8593bb', background: '#283334', size: 12, anchors: [painted.anchor], offset: [0, 0] } },
       { type: 'frame.transform', stepId: first.id, frameId: end.id, motions: [{ partIds: [pin.id], translation: [0, 0, 32] }] },
     ];
@@ -132,7 +132,7 @@ test('assembly API resolves surfaces, clips paint, checks insertion and previews
     assert.deepEqual(preview.changes.steps.map(change => change.stepId), [first.id, second.id]);
     assert.ok(preview.changes.handoffWarnings[0].parts.some(part => part.partId === pin.id));
     const frame = preview.project.steps[1].frames[1];
-    assert.equal(frame.id, frameId);
+    assert.equal(frame.id, frameId); assert.equal(frame.passThrough, true);
     closeTo(Math.hypot(...frame.poses[pin.id].position.map((value, i) => value - frame.poses[handle.id].position[i])),
       Math.hypot(...start.poses[pin.id].position.map((value, i) => value - start.poses[handle.id].position[i])));
     closeTo(frame.poses[handle.id].quaternion[2], Math.SQRT1_2);
@@ -147,6 +147,64 @@ test('assembly API resolves surfaces, clips paint, checks insertion and previews
       stepId: first.id, moving: { partIds: [pin.id] }, obstaclePartIds: [block.id], path: { kind: 'saved' },
     }));
     assert.equal(saved.pass, false);
+
+    project = (await batch([{ type: 'step.add', name: 'Approach the stop block', parts: [pin.id, block.id] }])).project;
+    const movingStep = project.steps.at(-1)!, [movingStart, movingEnd] = movingStep.frames, passId = 'approach-waypoint';
+    const movingPose = (z: number) => ({ position: [0, 0, z] as [number, number, number], quaternion: [0, 0, 0, 1] as [number, number, number, number] });
+    const poses = (z: number) => ({ [pin.id]: movingPose(z), [block.id]: movingPose(5.5) });
+    project = (await batch([
+      { type: 'frame.add', stepId: movingStep.id, afterId: movingStart.id, frameId: passId },
+      { type: 'frame.update', stepId: movingStep.id, frameId: movingStart.id, patch: { poses: poses(-4) } },
+      { type: 'frame.update', stepId: movingStep.id, frameId: passId, patch: { poses: poses(4), duration: 1 } },
+      { type: 'frame.update', stepId: movingStep.id, frameId: movingEnd.id, patch: { poses: poses(12), duration: .45 } },
+    ])).project;
+    const checkToWaypoint = post({ stepId: movingStep.id, moving: { partIds: [pin.id] }, obstaclePartIds: [block.id], sampleRate: 2,
+      path: { kind: 'saved', toFrameId: passId } });
+    const collisionTime = async () => (await request<{ firstViolation: { seconds: number } }>(`${url}/motion-check`, checkToWaypoint)).firstViolation.seconds;
+    assert.equal(await collisionTime(), .5);
+    const mark = { type: 'frame.update', stepId: movingStep.id, frameId: passId, patch: { passThrough: true } } as const;
+    for (const invalid of [{ ...mark, frameId: movingStart.id }, { ...mark, patch: { passThrough: 'true' } }]) {
+      await request(`${url}/commands`, post({ expectedRevision: project.revision, commands: [invalid] }), 400);
+    }
+    project = (await batch([mark])).project;
+    assert.equal(await collisionTime(), 1, 'A scoped motion check still uses the frame after its marked end point.');
+    const inserted = await batch([{ type: 'frame.add', stepId: movingStep.id, afterId: passId, frameId: 'extra-frame' }], true);
+    assert.equal(inserted.project.steps.at(-1)!.frames[2].passThrough, undefined);
+
+    project = (await batch([{ type: 'step.add', name: 'Sweep the four-bar output pin', parts: [pin.id, handle.id, sleeve.id, block.id] }])).project;
+    const sweep = project.steps.at(-1)!, [sweepStart, sweepEnd] = sweep.frames;
+    const at = (position: Vec3): Pose => ({ position, quaternion: [0, 0, 0, 1] });
+    const obstacle = at([9, 9, 0]);
+    const sweepPoses = (position: Vec3) => ({ [pin.id]: at(position), [handle.id]: obstacle, [sleeve.id]: at([18, 0, 0]), [block.id]: at([18, 9, 2]) });
+    project = (await batch([
+      { type: 'frame.update', stepId: sweep.id, frameId: sweepStart.id, patch: { poses: sweepPoses([10, 0, 0]) } },
+      { type: 'frame.update', stepId: sweep.id, frameId: sweepEnd.id, patch: { duration: 1, poses: sweepPoses([0, 10, 0]) } },
+    ])).project;
+    const sweepCheck = post({ stepId: sweep.id, moving: { partIds: [pin.id] }, obstaclePartIds: [handle.id], sampleRate: 2, path: { kind: 'saved' } });
+    assert.equal((await request<{ pass: boolean }>(`${url}/motion-check`, sweepCheck)).pass, true);
+    const linkage = { kind: 'four-bar', angleDegrees: 90,
+      input: { partIds: [sleeve.id], axis: { origin: [18, 0, 0], direction: [0, 0, 1] }, joint: { point: [0, 9, 2], partId: sleeve.id } },
+      output: { partIds: [pin.id], axis: { origin: [0, 0, 0], direction: [0, 0, 1] }, joint: { point: [0, 0, 0], partId: pin.id } },
+      coupler: { partIds: [block.id] },
+    } satisfies Extract<Command, { type: 'frame.motion' }>['motions'][number];
+    const track: Command = { type: 'frame.motion', stepId: sweep.id, frameId: sweepEnd.id, motions: [linkage] };
+    const unreachable = await request<{ error: string }>(`${url}/commands`, post({ expectedRevision: project.revision, preview: true,
+      commands: [{ ...track, motions: [{ ...linkage, angleDegrees: 180 }] }] }), 400);
+    assert.match(unreachable.error, /sweep is unreachable/);
+    const motionPreview = await batch([track], true);
+    assert.equal(motionPreview.project.steps.at(-1)!.frames[1].incomingMotion?.[0].kind, 'four-bar');
+    assert.deepEqual(await request<Project>(url), project);
+    project = (await batch([track])).project;
+    const midpoint = await geometry<{ parts: { pose: Pose }[] }>({ operation: 'find', query: pin.id, frameId: sweepStart.id, progress: .5 });
+    closeTo(midpoint.parts[0].pose.position[0], Math.sqrt(50)); closeTo(midpoint.parts[0].pose.position[1], Math.sqrt(50));
+    const rodAtMidpoint = (await geometry<{ parts: { pose: Pose }[] }>({ operation: 'find', query: block.id, frameId: sweepStart.id, progress: .5 })).parts[0].pose;
+    const rodEnd = new Vector3(-8, -9, -2).applyQuaternion(new Quaternion(...rodAtMidpoint.quaternion)).add(new Vector3(...rodAtMidpoint.position));
+    closeTo(rodEnd.distanceTo(new Vector3(...midpoint.parts[0].pose.position)), 0);
+    const sweepHit = await request<{ firstViolation: { seconds: number } }>(`${url}/motion-check`, sweepCheck);
+    assert.equal(sweepHit.firstViolation.seconds, .5, 'Saved collision checks follow the arc through the obstacle.');
+    await request(`${url}/commands`, post({ expectedRevision: project.revision, commands: [{ type: 'frame.update', stepId: sweep.id,
+      frameId: sweepEnd.id, patch: { poses: sweepPoses([0, 10, 0]) } }] }), 400);
+    assert.deepEqual(await request<Project>(url), project);
 
     const scope = { stepId: second.id, range: [.05, .25] as [number, number] };
     const [slice] = renderVideoSlices(project, scope), still = renderImageSample(project, { stepId: second.id, time: .05 });

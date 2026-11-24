@@ -1,5 +1,6 @@
 import { Vector3 } from 'three';
 import { copy, findPart, frameLabels, homePose } from '../shared/document.ts';
+import { isMotionTrack } from '../shared/motion-tracks.ts';
 import type { AssemblyStep, Camera, Command, Keyframe, Note, Project, SurfaceRegion, Vec3 } from '../shared/types.ts';
 import { escape as esc, modal } from './ui.ts';
 
@@ -29,7 +30,10 @@ function nonzero(vector: Vec3, name: string): void { if (vector.every(value => v
 
 export function editFrameSettings(step: AssemblyStep, frame: Keyframe, currentCamera: Camera, commit: Commit, applyCamera: (camera: Camera) => void): void {
   const camera = frame.camera ?? currentCamera;
-  modal('Frame settings', `<div class="assembly-editor"><label>Frame name<input data-frame-name aria-label="Frame name" value="${esc(frame.name)}"></label>${numberField('duration', frame.kind === 'start' ? 'Completed-step hold' : 'Transition duration', frame.duration, 's')}${vectorFields('eye', 'Camera eye', camera.eye, 'mm')}${vectorFields('target', 'Camera target', camera.target, 'mm')}${vectorFields('up', 'Camera up', camera.up)}${numberField('margin', 'Camera margin', camera.margin)}</div>`, [
+  const passThrough = frame.kind === 'transition' ? `<label><input type="checkbox" data-pass-through ${frame.passThrough ? 'checked' : ''}>Pass through this keyframe</label>` : '';
+  const motionText = JSON.stringify(frame.incomingMotion ?? [], null, 2);
+  const motionEditor = frame.kind === 'start' ? '' : `<details class="motion-editor" ${frame.incomingMotion?.length ? 'open' : ''}><summary>Incoming motion</summary><label>Motion tracks (JSON)<textarea data-motion-tracks rows="7" spellcheck="false">${esc(motionText)}</textarea></label><label><input type="checkbox" data-align-motion-start>Align preceding frame to the hole</label></details>`;
+  modal('Frame settings', `<div class="assembly-editor"><label>Frame name<input data-frame-name aria-label="Frame name" value="${esc(frame.name)}"></label>${numberField('duration', frame.kind === 'start' ? 'Completed-step hold' : 'Transition duration', frame.duration, 's')}${passThrough}${vectorFields('eye', 'Camera eye', camera.eye, 'mm')}${vectorFields('target', 'Camera target', camera.target, 'mm')}${vectorFields('up', 'Camera up', camera.up)}${numberField('margin', 'Camera margin', camera.margin)}${motionEditor}</div>`, [
     { label: 'Cancel', action: root => root.remove() },
     { label: 'Apply', primary: true, action: async root => {
       const input = root.querySelector('[data-frame-name]'); if (!(input instanceof HTMLInputElement)) return;
@@ -39,7 +43,18 @@ export function editFrameSettings(step: AssemblyStep, frame: Keyframe, currentCa
       const nextCamera: Camera = { eye: vectorValue(root, 'eye'), target: vectorValue(root, 'target'), up: vectorValue(root, 'up'), margin };
       nonzero(nextCamera.up, 'Camera up');
       if (nextCamera.eye.every((value, index) => value === nextCamera.target[index])) throw new Error('Camera eye and target must be different.');
-      await commit([{ type: 'frame.update', stepId: step.id, frameId: frame.id, patch: { name, duration, camera: nextCamera, image: null } }]);
+      const through = root.querySelector<HTMLInputElement>('[data-pass-through]');
+      const commands: Command[] = [{ type: 'frame.update', stepId: step.id, frameId: frame.id, patch: { name, duration, camera: nextCamera, image: null,
+        ...(through ? { passThrough: through.checked } : {}) } }];
+      const editor = root.querySelector<HTMLTextAreaElement>('[data-motion-tracks]');
+      const alignStart = root.querySelector<HTMLInputElement>('[data-align-motion-start]')?.checked ?? false;
+      if (editor && (editor.value !== motionText || alignStart)) {
+        let motions: unknown;
+        try { motions = JSON.parse(editor.value); } catch { throw new Error('Enter a valid JSON array of motion tracks.'); }
+        if (!Array.isArray(motions) || !motions.every(isMotionTrack)) throw new Error('Motion tracks need a valid kind, member selection and axis.');
+        commands.push({ type: 'frame.motion', stepId: step.id, frameId: frame.id, motions, alignStart });
+      }
+      await commit(commands);
       applyCamera(nextCamera); root.remove();
     } },
   ]);

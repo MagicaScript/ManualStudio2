@@ -64,6 +64,8 @@ export function renderVideoSlices(project: Project, scope: RenderScope): Playbac
   return timeline.flatMap(({ segment, start, end }) => {
     const lower = Math.max(start, from), upper = Math.min(end, to);
     if (upper <= lower) return [];
-    return [{ segment, start: (lower - start) / segment.duration, end: (upper - start) / segment.duration, duration: upper - lower }];
+    return [{ segment, start: lower === start ? 0 : (lower - start) / segment.duration,
+      end: upper === end ? 1 : (upper - start) / segment.duration,
+      duration: lower === start && upper === end ? segment.duration : upper - lower }];
   });
 }

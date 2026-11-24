@@ -25,7 +25,7 @@ A fresh workspace starts empty. Use the **File** menu to create or restore a pro
 - Overall preview and a single 3D workspace, dark gray panels, material swatches, view presets, measurement, section planes, explosion ratio, object/part selection, move/rotate and point/face alignment.
 - Section View establishes a camera-aligned cut with solid orange caps and preserved holes. Orbiting keeps the plane fixed; **Reset direction** aligns it to the new view. Hover the green keyboard icon for assembly shortcuts.
 - Overall **Explosion Ratio** runs from 1 to 3 and follows the source assembly offsets. Automatic teardown inside a step uses six-axis packing with 5 mm spacing; inherited assemblies remain fixed. X-Ray uses 0.15 opacity, front-face rendering, depth testing and display-space blending.
-- Assembly Structure cards with empty steps, membership selection, rename, copy, inheritance, insertion, deletion, drag reordering and final assembly.
+- Assembly Structure cards with empty steps, membership selection, rename, copy, inheritance, insertion, deletion and drag reordering. Create up to 255 ordinary steps plus a dedicated Final assembly.
 - Structure, List and Guide share header disclosure arrows, hover/focus feedback and a reversible 180 ms height animation. Collapsed panels show only their headers, including Guide's Timeline. Disclosure state survives frame changes; List has a separate tree expand/collapse action.
 - Structure search matches step names, instructions, inherited groups, part names, paths and materials while retaining global step numbers. Clearing the search restores all cards. Searching and panel disclosure do not edit the saved project.
 - The add-object picker stages checked parts, completed assemblies and canvas/list drops together. **Cancel** discards the draft; **OK** commits one batch and one Undo entry.
@@ -110,6 +110,10 @@ Equivalent native mesh exports can reorder vertices and triangles. Synchronizati
 Save, Undo and Redo show bordered hover-help boxes, including when a control is disabled. External CLI/API edits clear stale browser Undo/Redo snapshots so a later local undo cannot overwrite externally authored work.
 
 Use **Insert Step** between cards to insert an operation at that position. The original cards and their keyframes retain their identities.
+
+For a continuous motion, select an intermediate keyframe in **Assembly Guide → Timeline**, open **Frame settings…**, and enable **Pass through this keyframe**. Leave it unchecked wherever the motion should come to a stop. **Transition duration** is the time to reach the selected keyframe.
+
+Use **Frame settings → Incoming motion** on a destination keyframe to define a rigid rotation, a parallel-link translation, a planar four-bar linkage, or travel through a fixed hole. The [Agent Guide](Agent%20Guide.md) documents the motion tracks used by both the editor and the `frame.motion` command.
 
 In **Overall preview**, enable **Unassembled only** to show the visible source parts that are neither initially assembled nor assigned to an assembly operation. The **Final assembly** summary does not count as an operation for this filter.
 

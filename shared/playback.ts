@@ -1,15 +1,26 @@
-import { findFrame, findStep, frameQueue, interpolateFrames } from './document.ts';
-import type { AssemblyStep, FrameLabels, Keyframe, Project } from './types.ts';
+import { findFrame, findStep, frameQueue, interpolateFrames, type FrameInterpolation } from './document.ts';
+import { incomingMotionSampler } from './motion-tracks.ts';
+import type { AssemblyStep, FrameLabels, Keyframe, Pose, Project } from './types.ts';
 
-export interface PlaybackSegment { kind: 'cover' | 'title' | 'motion' | 'hold'; duration: number; step: AssemblyStep; from: Keyframe; to: Keyframe }
+export interface PlaybackSegment { kind: 'cover' | 'title' | 'motion' | 'hold'; duration: number; step: AssemblyStep; from: Keyframe; to: Keyframe; before?: Keyframe; after?: Keyframe; sampleMotion?: ReturnType<typeof incomingMotionSampler> }
 export interface PlaybackCard { title: string; subtitle?: string }
 
 export function framePlayback(project: Project, frameId?: string, stepId?: string): PlaybackSegment {
   const step = stepId ? findStep(project, stepId) : project.steps.find(step => step.frames.some(frame => frame.id === frameId));
   if (!step) throw new Error(`Unknown keyframe: ${frameId}.`);
-  const from = frameId === undefined ? step.frames[0] : findFrame(step, frameId);
-  const next = step.frames[step.frames.indexOf(from) + 1];
-  return { step, from, to: next ?? from, duration: next?.duration ?? 0, kind: next ? 'motion' : 'hold' };
+  return stepPlayback(project, step, frameId === undefined ? step.frames[0] : findFrame(step, frameId));
+}
+
+export function stepPlayback(project: Project, step: AssemblyStep, from: Keyframe): PlaybackSegment {
+  const index = step.frames.indexOf(from), to = step.frames[index + 1];
+  if (!to) return { kind: 'hold', step, from, to: from, duration: 0 };
+  const before = from.kind === 'transition' && from.passThrough ? step.frames[index - 1] : undefined;
+  const after = to.kind === 'transition' && to.passThrough ? step.frames[index + 2] : undefined;
+  return { kind: 'motion', step, from, to, duration: to.duration, before, after, sampleMotion: incomingMotionSampler(project, step, from, to, before, after) };
+}
+
+export function continuousBoundary(segment: PlaybackSegment, next?: PlaybackSegment): boolean {
+  return !!segment.after && next?.from === segment.to && next.to === segment.after;
 }
 
 export function playbackPlan(project: Project, localStepId?: string): PlaybackSegment[] {
@@ -22,8 +33,7 @@ export function playbackPlan(project: Project, localStepId?: string): PlaybackSe
     if (!localStepId) segments.push({ kind: 'title', duration: 1.5, step, from: start, to: start });
     if (step.partIds.length) {
       for (let frameIndex = 1; frameIndex < entries.length; frameIndex++) {
-        const from = entries[frameIndex - 1].frame, to = entries[frameIndex].frame;
-        segments.push({ kind: 'motion', duration: to.duration, step, from, to });
+        segments.push(stepPlayback(project, step, entries[frameIndex - 1].frame));
       }
       // The start frame has no incoming transition; its duration controls the completed-step hold.
       segments.push({ kind: 'hold', duration: start.duration, step, from: end, to: end });
@@ -43,7 +53,17 @@ export function easeMotion(progress: number): number {
 }
 
 export function playbackFrame(segment: PlaybackSegment, progress: number, defaultLabels?: FrameLabels): Keyframe {
-  return segment.kind === 'motion' ? interpolateFrames(segment.from, segment.to, easeMotion(progress), defaultLabels) : segment.to;
+  return segment.kind === 'motion' ? interpolateFrames(segment.from, segment.to, playbackInterpolation(segment, progress), defaultLabels) : segment.to;
+}
+
+export function playbackInterpolation(segment: PlaybackSegment, progress: number): FrameInterpolation {
+  const fraction = easeMotion(progress), { from, to, before, after, sampleMotion } = segment;
+  const curve = before || after ? {
+    progress, fraction, duration: to.duration, beforeDuration: before && from.duration, afterDuration: after?.duration,
+  } : undefined;
+  let poses: ReadonlyMap<string, Pose> | undefined;
+  const rigidPose = sampleMotion && ((id: string) => (poses ??= sampleMotion(progress, fraction)).get(id));
+  return { fraction, curve, before, after, rigidPose };
 }
 
 export function playbackCard(project: Project, segment: PlaybackSegment): PlaybackCard | undefined {

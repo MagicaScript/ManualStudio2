@@ -4,9 +4,9 @@ import { frameQueue } from '../shared/document.ts';
 import type { DisplayMode, LabelLayoutRequest, Project } from '../shared/types.ts';
 import { wrapLabelText } from '../shared/text-layout.ts';
 import type { Viewport } from './viewport.ts';
-import { captureAvc, captureVideoFrames } from './video.ts';
+import { captureAvc, captureVideoFrames, videoSegments } from './video.ts';
 import { videoHeight, videoWidth } from '../shared/video-format.ts';
-import { framePlayback, playbackCard, playbackDuration, playbackPlan } from '../shared/playback.ts';
+import { continuousBoundary, framePlayback, playbackCard, playbackDuration, playbackPlan } from '../shared/playback.ts';
 import { renderImageSample, renderVideoSlices, type RenderScope } from '../shared/render-scope.ts';
 import { drawPlaybackCard } from './playback-card.ts';
 
@@ -163,13 +163,21 @@ async function exportVideo(project: Project, view: Viewport, basename: string, p
   const canvas = document.createElement('canvas'); canvas.width = videoWidth; canvas.height = videoHeight;
   const context = canvas.getContext('2d', { alpha: false })!;
   const durations = slices.map(slice => slice.duration);
+  const sampleCounts = videoSegments(durations).map(({ count }) => count);
+  const openEnds = slices.map(({ segment, end }, index) =>
+    end === 1 && slices[index + 1]?.start === 0 && continuousBoundary(segment, slices[index + 1].segment));
   const drawFrame = (index: number, t: number, first: boolean): boolean => {
     const { segment, start, end } = slices[index], { step } = segment;
     if (segment.kind !== 'motion' && !first) return false;
     if (first) progress(`Rendering ${step.name} · ${segment.kind === 'motion' ? segment.to.name : segment.kind}`);
     const card = playbackCard(project, segment);
     if (card) drawPlaybackCard(context, canvas.width, canvas.height, card);
-    else { view.showPlayback(project, segment, start + (end - start) * t, display); view.drawCapture(context); }
+    else {
+      // Draw each pass-through waypoint once, at the start of its outgoing segment.
+      const count = sampleCounts[index], progress = openEnds[index] ? t * (count - 1) / count : t;
+      view.showPlayback(project, segment, start + (end - start) * progress, display);
+      view.drawCapture(context);
+    }
     return true;
   };
   const frames = await view.withVideoSize(async () => {

@@ -108,8 +108,9 @@ Add `preview: true` to evaluate the same commands without saving or incrementing
 | `part.remove` | `stepId`, `partIds`, `value` |
 | `frame.add` | `stepId`, `afterId`, optional new `frameId` for later commands in the same batch |
 | `frame.delete` | `stepId`, `frameId` of a transition frame |
-| `frame.update` | `stepId`, `frameId`, `patch` containing poses, hidden IDs, `xrayPartIds`, camera, duration, image or name |
+| `frame.update` | `stepId`, `frameId`, `patch` containing poses, hidden IDs, `xrayPartIds`, camera, duration, `passThrough`, image or name |
 | `frame.transform` | `stepId`, `frameId`, ordered `motions` of selected parts or step groups |
+| `frame.motion` | `stepId`, destination `frameId`, parallel `motions` for its incoming transition, optional `alignStart` |
 | `frame.cameraAll` | `stepId`, `camera` |
 | `note.put` | `stepId`, `frameId`, complete `note` |
 | `note.update` | `stepId`, `frameId`, `noteId`, property `patch` |
@@ -117,6 +118,8 @@ Add `preview: true` to evaluate the same commands without saving or incrementing
 | `settings.update` | `patch` |
 
 `step.final` never converts the referenced ordinary step. Its name, ID, membership and frames remain intact. Final assembly is unique, includes every active baseline body and stays after ordinary steps. Creation seeds its poses from the latest completed operations. Explicit refresh reseeds only its End and removal visibility; independently authored Start and transition frames remain intact. Inventory synchronization adds/prunes bodies while preserving surviving frame poses. Final keyframes, cameras, labels and annotations are editable. Editing Final End poses also updates `Part.assemblyHome`, leaving the native `home` and ordinary frames unchanged. Ordinary insertions/copies/reorders stay before Final; it cannot be copied, inherited, reordered or assigned a subset of members.
+
+To carry motion through an intermediate keyframe, issue `{"type":"frame.update","stepId":"STEP_ID","frameId":"WAYPOINT_ID","patch":{"passThrough":true}}`. The playhead still reaches the authored pose at the waypoint time. Translations, rotations, camera motion and the positions of persistent labels use matching velocities on either side. Reversing directions slow down to keep short moves within their authored endpoints. Omit the field on a new frame or set it to `false` to ease to a stop. Start and End are always stops. The frame's `duration` still controls the time to reach it. Scoped rendering, layout queries and saved motion checks use neighboring keyframes from the full step when evaluating the curve.
 
 `step.merge` is the native checked-card operation. Sources are processed in document order regardless of click or command-array order. Partial coverage inserts a new **Merged Step** after the last selected card: its two frames combine source Start/End poses, and later sources win overlaps. Source transitions and annotations remain in their original cards; they are not copied. The new frames receive fitted cameras and their own editable label presentation. Full active-baseline coverage appends a fresh Final assembly with the composite Start/End. If Final already exists, only its `final` flag changes to false: its ID, frames, transitions and annotations remain intact as an ordinary step. This requires an available ordinary-step slot. Every other source record remains unchanged. The operation is one command batch and one Undo entry.
 
@@ -139,7 +142,7 @@ Reordering before the same step or into its existing position is a no-op. A batc
 
 ### Author motion in a batch
 
-Each motion takes `partIds`, `groupIds`, or both. It can apply `translation` in world millimeters, a signed `distance` along an axis, and a right-hand `angleDegrees` about that axis. When combined, rotation precedes translation. An axis can be `{ "axisId": "AXIS_ID" }` for a construction axis or `{ "origin": [0,0,0], "direction": [0,0,1] }` in world coordinates. Add `partId` to an explicit axis to express it in that part's local coordinates. References resolve from the target keyframe's poses before each motion. The members receive the same rigid transform at that keyframe. Between saved frames, playback interpolates their individual poses. Place additional keyframes where the path needs to follow an arc.
+Each `frame.transform` motion takes `partIds`, `groupIds`, or both. It can apply `translation` in world millimeters, a signed `distance` along an axis, and a right-hand `angleDegrees` about that axis. When combined, rotation precedes translation. An axis can be `{ "axisId": "AXIS_ID" }` for a construction axis or `{ "origin": [0,0,0], "direction": [0,0,1] }` in world coordinates. Add `partId` to an explicit axis to express it in that part's local coordinates. References resolve from the target keyframe's poses before each transform. Use `frame.motion` to describe how a group travels throughout a transition.
 
 ```json
 [
@@ -154,6 +157,78 @@ Each motion takes `partIds`, `groupIds`, or both. It can apply `translation` in 
 ```
 
 Append a `note.put` with the same frame ID to set an annotation in that batch.
+
+### Save a rigid path for an incoming transition
+
+`frame.motion` saves its `motions` as `incomingMotion` on the destination keyframe and computes the selected members' ending poses from the preceding keyframe. Unselected members keep their authored poses. One transition can run multiple tracks on different axes. Each part belongs to at most one track. Resolve axes at the start of the transition and hold them fixed for its duration. A construction axis needs a single placement across its owners. A world or part-local axis can specify the placement directly.
+
+```json
+{
+  "type": "frame.motion",
+  "stepId": "STEP_ID",
+  "frameId": "END_ID",
+  "motions": [
+    {"kind":"rotate","groupIds":["PIVOT_GROUP"],"axis":{"axisId":"SPINDLE_AXIS"},"angleDegrees":30},
+    {"kind":"follow-rotation","partIds":["LINK","SOCKET"],"axis":{"origin":[0,12,0],"direction":[0,0,1]},"angleDegrees":30,"point":[20,12,0]}
+  ]
+}
+```
+
+For `follow-rotation`, `point` is the driver's world position at the start. Each member receives the driver's displacement and keeps its start orientation. For a parallel linkage driven through equal angles, use the midpoint of the two axes and the midpoint of the two driven points.
+
+Use the following track within a `frame.motion` command for a rigid wire moving through a stationary hole.
+
+```json
+{
+  "kind": "path-through-axis",
+  "partIds": ["WIRE_ID"],
+  "axis": {"partId":"FIXTURE_ID","origin":[0,0,0],"direction":[0,0,1]},
+  "path": {
+    "partId":"WIRE_ID",
+    "start":[0,0,0],
+    "segments":[
+      {"kind":"line","to":[20,0,0]},
+      {"kind":"arc","center":[20,5,0],"normal":[0,0,1],"angleDegrees":90},
+      {"kind":"line","to":[25,20,0]}
+    ]
+  },
+  "startDistance": 10,
+  "endDistance": 30,
+  "halfSpan": 0.5
+}
+```
+
+The planar centerline is in `path.partId`'s local coordinates. A line ends at `to`. An arc starts at the preceding endpoint and turns by the signed, right-hand sweep about its `normal`. The next segment continues from the computed arc endpoint. Distances and `halfSpan` are in millimeters. The range can run in either direction along the centerline. At distance `s`, the solver places `p(s)` at the hole center and aligns the chord from `p(s−halfSpan)` to `p(s+halfSpan)` with the hole axis. The two terminal tangents extend the sampling range for this chord. The initial pose supplies the roll, and the solver keeps the bend plane steady as the wire advances.
+
+By default the preceding pose of the wire must already meet the hole. Set `alignStart: true` on the command to solve both the preceding and destination poses. Use `preview: true` on the command batch to review both changes at the current revision. Manual edits that move a constrained endpoint require reapplying the motion to recalculate the poses, or clearing it with `motions: []`. Clearing keeps the saved poses. In the GUI, **Frame settings → Incoming motion** edits the same JSON array.
+
+The destination frame's `duration` controls each track's travel time. Compatible tracks carry velocity across intermediate frames marked `passThrough`. Playback, scoped PNG and MP4, label projection, `geometry` and saved `motion-check` all sample the saved path. The scoped API accepts the preceding frame ID when querying an incoming transition at fractional progress.
+
+### Drive a planar four-bar
+
+Add a `four-bar` track to a `frame.motion` command. The output rotates by `angleDegrees`, measured from the preceding keyframe using the right-hand rule about `output.axis.direction`. The solver takes the link lengths and assembly branch from that keyframe and solves the input rotation at each sample. The coupler follows both hinges with a single rigid transform that preserves its axial offset. Use separate member selections for the three links. Pins and other hardware can follow whichever link holds them.
+
+```json
+{
+  "kind": "four-bar",
+  "angleDegrees": 25,
+  "input": {
+    "axis": {"origin":[0,0,0],"direction":[0,0,1]},
+    "joint": {"point":[8,6,0]},
+    "groupIds": ["INPUT_GROUP"]
+  },
+  "output": {
+    "axis": {"origin":[24,0,0],"direction":[0,0,1]},
+    "joint": {"point":[20,9,2]},
+    "partIds": ["OUTPUT_LINK", "OUTPUT_PIN"]
+  },
+  "coupler": {"partIds":["ROD", "END_FITTING"]}
+}
+```
+
+Supply each joint center as a world point from the preceding keyframe or give `joint.partId` and a point local to that part. Part-local joints can be reused for a return transition with the signed output angle reversed. The two fixed axes must be parallel and can point in opposite directions. Both axes resolve using the usual world, part-local and construction-axis references. The joint centers may have different heights along the axes.
+
+At a dead-center starting pose, supply `branch: "positive"` or `"negative"`. The sign is measured by dotting the output axis direction with the cross product of the projected input-pivot-to-output-joint vector and the projected input-pivot-to-input-joint vector. The command validates the entire output sweep before writing endpoints. Other disjoint parts can play separate tracks during the same transition.
 
 ## Geometry and annotations
 
@@ -228,7 +303,7 @@ Send JSON to `POST /api/projects/:id/motion-check`, or use `npm run cli -- motio
 
 | Path `kind` | Motion |
 | --- | --- |
-| `saved` | Check transitions in the selected step through its End or an optional `path.toFrameId`. Use the saved poses of both moving and obstacle parts at each sampled time. |
+| `saved` | Check transitions in the selected step through its End or an optional `path.toFrameId`. Sample both moving and obstacle parts with the same interpolation as playback, including saved pass-through waypoints. |
 | `insertion` | Translate the moving parts by `path.distance` along `path.axis`. Obstacles keep their starting poses. `path.duration` defaults to one second. |
 | `waypoints` | Follow `path.waypoints`, an ordered array of `{duration, poses}` objects. Each pose is an absolute world pose for a moving member. Unspecified poses carry forward and obstacles stay fixed. This accepts a candidate path without saving keyframes. |
 

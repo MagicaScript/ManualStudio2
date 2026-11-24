@@ -11,3 +11,6 @@
 .assembly-editor .region-plane { position: relative; }
 .assembly-editor .region-plane-remove { position: absolute; right: 8px; top: -19px; padding: 1px 6px; background: #303136; font-size: 10px; }
 .assembly-editor .region-attachment > summary { cursor: pointer; color: #bfc4c4; padding: 5px 0; }
+.assembly-editor .motion-editor > summary { cursor: pointer; padding: 5px 0; }
+.assembly-editor .motion-editor > label:first-of-type { display: grid; gap: 6px; }
+.assembly-editor .motion-editor textarea { width: 100%; min-width: 0; font-family: monospace; }

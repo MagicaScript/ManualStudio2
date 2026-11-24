@@ -2,6 +2,7 @@ import '../../src/style.css';
 import { BoxGeometry, Quaternion, Vector3 } from 'three';
 import { Viewport } from '../../src/viewport.ts';
 import { emptyProject, makeStep } from '../../shared/document.ts';
+import { framePlayback } from '../../shared/playback.ts';
 import type { Anchor, Note, Part, Vec3 } from '../../shared/types.ts';
 import { DEFAULT_NOTE_COLOR } from '../../shared/render-style.ts';
 
@@ -107,7 +108,61 @@ const clicks = {
   hollow: { x: circle.x + circle.width / 2, y: circle.y + circle.height / 2 },
   arrowhead: { x: headBounds.x + headBounds.width / 2, y: headBounds.y + headBounds.height / 2 },
 };
-const report = { ratio, orbit, moved, beforeZoom, afterZoom, hiddenCount, clippedIds, hiddenNoteIds, behindCameraCount, samples, matching, partialCoverage, leaderStyle, clicks };
+
+function samplePin(capture: HTMLCanvasElement, point: Vec3) {
+  const projected = view.meshes.get(part.id)!.localToWorld(new Vector3(...point)).project(view.camera);
+  const x = (projected.x + 1) * capture.width / 2, y = (1 - projected.y) * capture.height / 2;
+  const live = document.createElement('canvas'); live.width = capture.width; live.height = capture.height;
+  live.getContext('2d')!.drawImage(view.renderer.domElement, 0, 0);
+  const read = (canvas: HTMLCanvasElement) => {
+    const top = Math.floor(y) - 24, pixels = canvas.getContext('2d')!.getImageData(Math.floor(x), top, 1, 49).data;
+    const colored: number[] = [];
+    for (let row = 0; row < 49; row++) {
+      const [r, g, b] = pixels.subarray(row * 4, row * 4 + 3);
+      if (r - g > 40 && b - g > 30) colored.push(top + row + .5);
+    }
+    const ratio = view.renderer.getPixelRatio();
+    return { diameter: colored.length / ratio, centerError: colored.length ? Math.abs((colored[0] + colored.at(-1)!) / 2 - y) / ratio : undefined };
+  };
+  return { width: capture.width, height: capture.height, live: read(live), capture: read(capture) };
+}
+
+async function verifyTextPins() {
+  const shapes = frame.notes, end = step.frames.at(-1)!;
+  const startPoint: Vec3 = [18, 25, 10], endPoint: Vec3 = [-12, 25, -10];
+  const near: Vec3 = [0, -180, 0], far: Vec3 = [0, -1600, 0];
+  const text: Note = { ...note('pin', 'text', [anchor(startPoint)]), text: 'Inspect the housing', color: '#e03ad1', offset: [120, -8] };
+  frame.notes = [text];
+  frame.camera = { eye: near, target: [0, 0, 0], up: [0, 0, 1], margin: 1.25 };
+  end.camera = { ...frame.camera, eye: far };
+  end.poses[part.id] = { ...part.home, position: [14, 5, 8] };
+  end.notes = [{ ...text, anchors: [anchor(endPoint)] }];
+  const still = (eye: Vec3) => { view.show(project, step, frame, 'current'); setCamera(eye); return samplePin(view.capture(), startPoint); };
+  try {
+    const editing = [still(near), still(far)];
+    const playing = () => {
+      view.showPlayback(project, framePlayback(project, frame.id), .5, 'current');
+      return samplePin(view.capture(), [3, 25, 0]);
+    };
+    const playback = playing();
+    const exported = await view.withVideoSize(async () => [still(near), still(far), playing()]);
+    view.restoreSection({ amount: .5, normal: [-1, 0, 0] });
+    const clipped = still(near).live.diameter;
+    view.setSection(0);
+    frame.hidden = [part.id];
+    const hiddenPart = still(near).live.diameter;
+    frame.hidden = [];
+    text.hidden = true;
+    const hiddenNote = still(near).live.diameter;
+    return { editing, playback, exported, clipped, hiddenPart, hiddenNote };
+  } finally {
+    frame.notes = shapes; frame.hidden = [];
+    view.show(project, step, frame, 'current'); setCamera([0, -300, 0]); view.capture();
+  }
+}
+
+const pins = await verifyTextPins();
+const report = { ratio, orbit, moved, beforeZoom, afterZoom, hiddenCount, clippedIds, hiddenNoteIds, behindCameraCount, samples, matching, partialCoverage, leaderStyle, clicks, pins };
 function zoomOutAnnotations() {
   frame.notes.forEach(note => { note.size = 5; note.hidden = note.kind === 'arrow'; });
   state([0, -1600, 0]);

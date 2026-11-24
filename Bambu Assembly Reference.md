@@ -8,7 +8,7 @@ The implementation is a fresh TypeScript/three.js application. The upstream sour
 | --- | --- |
 | [AssemblyStepsUtilsImgui.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtilsImgui.cpp) | Assembly Structure cards, right-side tree, object-selection popup, connection types, note tools, labels, timeline, display modes, playback controls and export options |
 | [AssemblyStepsUtils.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.cpp) | Step copy/inheritance, membership, keyframe snapshots, playback ordering, frame interpolation and export sequencing |
-| [AssemblyStepsUtils.hpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.hpp) | UI state, 99 ordinary-step limit, playback/display modes and public Assembly operations |
+| [AssemblyStepsUtils.hpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/AssemblyStepsUtils.hpp) | UI state, playback/display modes and public Assembly operations |
 | [AssemblyStepsJson.hpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/libslic3r/Format/AssemblyStepsJson.hpp) | Stable step references, inherited assembled objects, camera snapshots, per-frame transforms, notes and labels |
 | [OverviewUtils.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/slic3r/GUI/Overview/OverviewUtils.cpp) | Independent assembly poses and source-model relationships |
 | [ImGuizmo.cpp](https://github.com/bambulab/BambuStudio/blob/v02.09.01.70/src/imguizmo/ImGuizmo.cpp) | Navigator face grid, 26 directions, shared face/edge/corner highlighting, projected labels, coordinate arrows and constrained drag |

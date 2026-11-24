@@ -6,15 +6,23 @@ import { createServer } from 'vite';
 import { chromium, type Browser } from 'playwright-core';
 import { findBrowser } from '../tools/dependencies.ts';
 
-interface RenderingReport { maxSamples: number; binaryCapEdgePixels: number; coveredCapEdgePixels: number; capChangedPixels: number; duplicatePaintDifference: number; longStrokeDifference: number; erasedRegionDifference: number; duplicateTriangleCount: number; holeCenter: number[]; singlePaintColor: number[]; overlappingPaintColor: number[]; latestPaintColor: number[]; latestOverlapColor: number[]; clippedInsideColor: number[]; clippedOutsideColor: number[]; unpaintedColor: number[]; smoothPaintEdgePixels: number; binaryPaintEdgePixels: number; nextFrameInsideColor: number[]; nextFrameOutsideColor: number[] }
+interface RenderingReport {
+  maxSamples: number; binaryCapEdgePixels: number; coveredCapEdgePixels: number; capChangedPixels: number;
+  duplicatePaintDifference: number; longStrokeDifference: number; erasedRegionDifference: number; duplicateTriangleCount: number;
+  holeCenter: number[]; singlePaintColor: number[]; overlappingPaintColor: number[]; latestPaintColor: number[]; latestOverlapColor: number[];
+  clippedInsideColor: number[]; clippedOutsideColor: number[]; unpaintedColor: number[];
+  smoothPaintEdgePixels: number; binaryPaintEdgePixels: number; nextFrameInsideColor: number[]; nextFrameOutsideColor: number[];
+  clippedJoinDifference: number; triangleJoinDifference: number; dryOpening: number[]; paintNextToOpening: number[]; openingEdgePixels: number;
+  depthPixels: number[]; nearPlanes: number[]; legacyDepthPixels: number; gaugePixels: number; gaugeNearPlane: number;
+}
 function isReport(value: unknown): value is RenderingReport {
   if (!value || typeof value !== 'object') return false;
   const result = value as Record<string, unknown>;
-  return ['maxSamples', 'binaryCapEdgePixels', 'coveredCapEdgePixels', 'capChangedPixels', 'duplicatePaintDifference', 'longStrokeDifference', 'erasedRegionDifference', 'duplicateTriangleCount', 'smoothPaintEdgePixels', 'binaryPaintEdgePixels'].every(key => typeof result[key] === 'number')
-    && ['holeCenter', 'singlePaintColor', 'overlappingPaintColor', 'latestPaintColor', 'latestOverlapColor', 'clippedInsideColor', 'clippedOutsideColor', 'unpaintedColor', 'nextFrameInsideColor', 'nextFrameOutsideColor'].every(key => Array.isArray(result[key]) && result[key].length === 3 && result[key].every(channel => typeof channel === 'number'));
+  return ['maxSamples', 'binaryCapEdgePixels', 'coveredCapEdgePixels', 'capChangedPixels', 'duplicatePaintDifference', 'longStrokeDifference', 'erasedRegionDifference', 'duplicateTriangleCount', 'smoothPaintEdgePixels', 'binaryPaintEdgePixels', 'clippedJoinDifference', 'triangleJoinDifference', 'openingEdgePixels', 'legacyDepthPixels', 'gaugePixels', 'gaugeNearPlane'].every(key => typeof result[key] === 'number')
+    && ['holeCenter', 'singlePaintColor', 'overlappingPaintColor', 'latestPaintColor', 'latestOverlapColor', 'clippedInsideColor', 'clippedOutsideColor', 'unpaintedColor', 'nextFrameInsideColor', 'nextFrameOutsideColor', 'dryOpening', 'paintNextToOpening', 'depthPixels', 'nearPlanes'].every(key => Array.isArray(result[key]) && result[key].length === 3 && result[key].every(channel => typeof channel === 'number'));
 }
 
-test('GPU surface painting is idempotent and clipped caps retain multisample coverage', { timeout: 45000 }, async context => {
+test('painted surfaces stay continuous, section edges retain coverage, and close views preserve depth', { timeout: 45000 }, async context => {
   const executablePath = await findBrowser(true);
   assert.ok(executablePath, 'The rendering check requires the installed Chrome executable.');
   const server = await createServer({ configFile: false, root: process.cwd(), logLevel: 'error', server: { host: '127.0.0.1', port: 0 }, appType: 'mpa' });
@@ -44,6 +52,15 @@ test('GPU surface painting is idempotent and clipped caps retain multisample cov
     assert.ok(report.coveredCapEdgePixels > report.binaryCapEdgePixels + 80, 'Clip boundaries need partial sample coverage rather than whole-pixel discard.');
     assert.ok(report.capChangedPixels > 80);
     assert.ok(report.smoothPaintEdgePixels > report.binaryPaintEdgePixels + 50, 'Paint masks must retain partial edge coverage as well as the clipped body.');
+    assert.equal(report.clippedJoinDifference, 0, 'Adjacent clips of the same color must cover their shared edges within a triangle.');
+    assert.equal(report.triangleJoinDifference, 0, 'The mesh rasterizer must cover the shared boundary of neighboring painted triangles.');
+    assert.deepEqual(report.dryOpening, report.unpaintedColor, 'The dry opening in the joined regions must remain unpainted.');
+    assert.deepEqual(report.paintNextToOpening, report.singlePaintColor);
+    assert.ok(report.openingEdgePixels > 100, 'A dry opening must keep antialiased edges.');
+    assert.ok(report.legacyDepthPixels > 100, 'The close reading must reproduce the depth conflict at the old near plane.');
+    assert.deepEqual(report.depthPixels, [0, 0, 0], 'No part of the nearly coplanar insert should leak through the cover as the view moves.');
+    assert.ok(report.nearPlanes.every(near => near > 400), 'Offscreen ends must not consume the near depth range.');
+    assert.ok(report.gaugePixels > 100 && report.gaugeNearPlane < 40, 'Bringing a part near the camera must expand the depth range before it clips.');
     const directory = path.resolve('artifacts'); await mkdir(directory, { recursive: true });
     await page.locator('#sectionCoverage').screenshot({ path: path.join(directory, 'Section Coverage Verification.png') });
     await page.locator('#paintCoverage').screenshot({ path: path.join(directory, 'Surface Paint Verification.png') });

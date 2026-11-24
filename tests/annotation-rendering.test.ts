@@ -36,6 +36,17 @@ test('anchored annotation outlines face the camera, retain pixel strokes and mat
       assert.ok(report.samples > 300); assert.ok(report.matching / report.samples > .98, 'Exported strokes match the onscreen SVG coverage and raw preset color.');
       assert.ok(report.partialCoverage > 100, 'Outlines retain antialiased edge coverage.');
       assert.deepEqual(report.leaderStyle, { color: 'rgba(0,199,79,0.86)', lineWidth: 2, dotRadius: 4.8, text: 'rgb(238, 238, 238)' });
+      const { editing, playback, exported, clipped, hiddenPart, hiddenNote } = report.pins;
+      for (const shot of [...editing, playback, ...exported]) for (const pin of [shot.live, shot.capture]) {
+        assert.ok(Math.abs(pin.diameter - 9.6) <= 1, `Expected a 9.6-pixel pin: ${JSON.stringify(shot)}`);
+        assert.ok(pin.centerError !== undefined && pin.centerError < .8, `The pin must follow its projected anchor: ${JSON.stringify(shot)}`);
+      }
+      for (const [near, far] of [editing, exported]) {
+        assert.ok(Math.abs(near.live.diameter - far.live.diameter) <= 1);
+        assert.ok(Math.abs(near.capture.diameter - far.capture.diameter) <= 1);
+      }
+      assert.ok(exported.every(shot => shot.width === 1920 && shot.height === 1080));
+      assert.deepEqual([clipped, hiddenPart, hiddenNote], [0, 0, 0]);
       for (const name of ['rectangle', 'circle', 'arrowhead', 'hollow'] as const) {
         await page.mouse.click(report.clicks[name].x, report.clicks[name].y);
         assert.equal(await page.locator('#viewport').getAttribute('data-selection'), name === 'arrowhead' ? 'arrow' : name === 'hollow' ? 'part' : name);

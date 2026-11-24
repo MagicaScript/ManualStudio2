@@ -11,14 +11,15 @@ import { orbitDirection, viewDirections } from '../shared/navigation.ts';
 import { loadGeometries, surfaceAnchor, type PickSettings } from './geometry.ts';
 import { applySurfacePaint, type SurfacePaint } from './surface-paint.ts';
 import type { Anchor, AssemblyStep, Camera, DisplayMode, Keyframe, Note, NoteKind, Part, Pose, Project, Vec3 } from '../shared/types.ts';
-import { assembledPartIds, copy, DEFAULT_LABEL_OFFSET, explodedPoses, frameLabels, homePose, interpolateCamera, interpolateOffset, interpolatePose, makeStep } from '../shared/document.ts';
+import { assembledPartIds, copy, DEFAULT_LABEL_OFFSET, explodedPoses, frameLabels, homePose, interpolatedFrameCamera, interpolatedFramePose, interpolateOffset, makeStep, type FrameInterpolation } from '../shared/document.ts';
 import { browserRoots, modelVisibility } from '../shared/model-tree.ts';
-import { easeMotion, playbackFrame, type PlaybackSegment } from '../shared/playback.ts';
+import { playbackFrame, playbackInterpolation, type PlaybackSegment } from '../shared/playback.ts';
+import { curveOffset, curveVector } from '../shared/motion-curve.ts';
 import { arrangeLabelBoxes, measureLabelBox, type LabelLayoutBox } from '../shared/text-layout.ts';
 import { AnnotationOverlay } from './annotation-overlay.ts';
 import { icon } from './icons.ts';
 import { planLabelMotion, positionAnimatedLabel } from './label-motion.ts';
-import { ANNOTATION_LINE_WIDTH, PART_LABEL_LINE_COLOR, PART_LABEL_DOT_COLOR, PART_LABEL_DOT_RADIUS } from '../shared/render-style.ts';
+import { ANNOTATION_LINE_WIDTH, LEADER_DOT_RADIUS, PART_LABEL_LINE_COLOR, PART_LABEL_DOT_COLOR } from '../shared/render-style.ts';
 import { videoHeight, videoLayoutSize, videoWidth } from '../shared/video-format.ts';
 
 export type ViewTool = 'select' | 'move' | 'rotate' | 'measure' | 'align' | NoteKind;
@@ -49,6 +50,7 @@ interface LabelDefinition {
 interface Label extends LabelDefinition { element: HTMLButtonElement; offset: [number, number]; isPart: boolean; x: number; y: number; world: THREE.Vector3; icon?: HTMLImageElement }
 interface MeasuredLabel extends LabelDefinition { width: number; height: number }
 interface MotionPosition extends LabelLayoutBox { id: string; world: THREE.Vector3 }
+interface AnnotationPin { mesh: THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>; anchor: Anchor; labelId?: string }
 interface AnnotationViewport { width: number; height: number; fullWidth: number; insetX: number; scale: number }
 const videoAnnotationScale = videoHeight / videoLayoutSize.height;
 const videoAnnotationWidth = videoWidth / videoAnnotationScale;
@@ -59,8 +61,11 @@ function projectLabelAnchor(projected: THREE.Vector3, { fullWidth, height, inset
   return { anchorX: (projected.x + 1) * fullWidth / 2 - insetX, anchorY: (1 - projected.y) * height / 2 };
 }
 interface PlaybackLayout {
-  project: Project; segment: PlaybackSegment; projection: string; viewport: AnnotationViewport; fromCamera: Camera; toCamera: Camera;
-  labels?: { from: Map<string, MeasuredLabel>; to: Map<string, MeasuredLabel>; tracks?: ReturnType<typeof planLabelMotion> };
+  project: Project; segment: PlaybackSegment; projection: string; viewport: AnnotationViewport; cameraFallback: Camera;
+  labels?: {
+    from: Map<string, MeasuredLabel>; to: Map<string, MeasuredLabel>; before?: Map<string, LabelDefinition>; after?: Map<string, LabelDefinition>;
+    tracks?: ReturnType<typeof planLabelMotion>;
+  };
 }
 interface TransparentItem { object: THREE.Object3D; groupOrder: number; renderOrder: number; z: number; id: number }
 export class Viewport {
@@ -79,6 +84,7 @@ export class Viewport {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pivot = new THREE.Group();
   private readonly annotationRoot = new THREE.Group();
+  private readonly annotationPins: AnnotationPin[] = [];
   private paintCleanups: (() => void)[] = [];
   private readonly axes = new THREE.AxesHelper(70);
   private readonly lightRig = new THREE.Group();
@@ -229,19 +235,21 @@ export class Viewport {
     this.setPlaybackCamera(layout, progress);
   }
   private getPlaybackLayout(project: Project, segment: PlaybackSegment): PlaybackLayout {
-    const viewport = this.annotationViewport, { from, to, step } = segment;
+    const viewport = this.annotationViewport, { from, to, step, before, after } = segment;
     const projection = [0, 5, 8, 9].map(index => this.camera.projectionMatrix.elements[index]).join(',');
     let layout = this.playbackLayout;
     if (!layout || layout.project !== project || layout.segment.step !== step || layout.segment.from !== from || layout.segment.to !== to ||
       layout.viewport.width !== viewport.width || layout.viewport.height !== viewport.height || layout.viewport.scale !== viewport.scale || layout.projection !== projection) {
-      const fallback = from.camera && to.camera ? from.camera : step.frames.find(frame => frame.camera)?.camera ?? this.fitPlaybackCamera(project, step);
-      layout = { project, segment, viewport, projection, fromCamera: from.camera ?? fallback, toCamera: to.camera ?? fallback };
+      const cameraFallback = from.camera && to.camera && (!before || before.camera) && (!after || after.camera)
+        ? from.camera : step.frames.find(frame => frame.camera)?.camera ?? this.fitPlaybackCamera(project, step);
+      layout = { project, segment, viewport, projection, cameraFallback };
       this.playbackLayout = layout;
     }
     return layout;
   }
   private setPlaybackCamera(layout: PlaybackLayout, progress: number): void {
-    const camera = interpolateCamera(layout.fromCamera, layout.toCamera, easeMotion(progress));
+    const { from, to } = layout.segment;
+    const camera = interpolatedFrameCamera(from, to, playbackInterpolation(layout.segment, progress), layout.cameraFallback) ?? layout.cameraFallback;
     const damping = this.controls.enableDamping; this.controls.enableDamping = false;
     this.controls.update(); this.setCamera(camera); this.controls.enableDamping = damping;
   }
@@ -434,7 +442,7 @@ export class Viewport {
     this.controls.enabled = true;
     this.callbacks.dragHover?.(null);
   }
-  private disposeAnnotationObjects(): void { this.annotationRoot.traverse(object => { if (object instanceof THREE.Mesh || object instanceof THREE.Line) { object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach(material => material.dispose()); } }); this.annotationRoot.clear(); this.labelsHost.replaceChildren(); this.labels = []; this.annotationOverlay.clear(); this.noteTargets.clear(); }
+  private disposeAnnotationObjects(): void { this.annotationRoot.traverse(object => { if (object instanceof THREE.Mesh || object instanceof THREE.Line) { object.geometry.dispose(); const materials = Array.isArray(object.material) ? object.material : [object.material]; materials.forEach(material => material.dispose()); } }); this.annotationRoot.clear(); this.annotationPins.length = 0; this.labelsHost.replaceChildren(); this.labels = []; this.annotationOverlay.clear(); this.noteTargets.clear(); }
   private describeLabels(project: Project, step?: AssemblyStep, frame?: Keyframe): LabelDefinition[] {
     const settings = frameLabels(project, frame), fontSize = settings.labelFontSize;
     const labels: LabelDefinition[] = [];
@@ -477,12 +485,16 @@ export class Viewport {
     const surfacePaint = new Map<string, SurfacePaint[]>();
     for (const note of notes) {
       if (note.hidden) continue;
-      for (const anchor of note.anchors) {
-        const mesh = this.meshes.get(anchor.partId); if (!mesh) continue;
-        const group = new THREE.Group(); group.userData.partId = anchor.partId; this.annotationRoot.add(group);
+      const hasPin = ['text', 'clip', 'screw', 'remove'].includes(note.kind);
+      for (const [index, anchor] of note.anchors.entries()) {
+        if (!this.meshes.has(anchor.partId)) continue;
         if (anchor.region) { const areas = surfacePaint.get(anchor.partId) ?? []; areas.push({ region: anchor.region, color: note.color }); surfacePaint.set(anchor.partId, areas); }
-        if (!['circle', 'rectangle', 'glue', 'pencil', 'arrow'].includes(note.kind)) {
-          const pin = new THREE.Mesh(new THREE.SphereGeometry(Math.max(.65, note.size / 5), 10, 8), new THREE.MeshBasicMaterial({ color: note.color, depthTest: false })); pin.position.fromArray(anchor.point); pin.renderOrder = 5; group.add(pin);
+        if (hasPin) {
+          const material = new THREE.MeshBasicMaterial({ color: note.color, depthTest: false, clippingPlanes: this.sectionActive ? [this.clip] : [] });
+          const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 32), material);
+          mesh.renderOrder = 5;
+          this.annotationRoot.add(mesh);
+          this.annotationPins.push({ mesh, anchor, labelId: index === 0 ? note.id : undefined });
         }
       }
       if (note.kind === 'pencil') {
@@ -541,18 +553,28 @@ export class Viewport {
     for (const id of label.groupParts) center.add(point.setFromMatrixPosition(matrixFor(id)));
     return center.divideScalar(label.groupParts.length);
   }
-  private projectedLabels(layout: PlaybackLayout, progress: number, camera: THREE.PerspectiveCamera, matrixFor: (partId: string) => THREE.Matrix4, visible: (partId: string) => boolean): MotionPosition[] {
-    const { from, to } = layout.labels!;
-    const t = easeMotion(progress), firstHalf = t < .5, current = firstHalf ? from : to, other = firstHalf ? to : from;
+  private projectedLabels(layout: PlaybackLayout, blend: FrameInterpolation, camera: THREE.PerspectiveCamera, matrixFor: (partId: string) => THREE.Matrix4, visible: (partId: string) => boolean): MotionPosition[] {
+    if (!layout.labels) return [];
+    const { from, to, before, after } = layout.labels, { fraction, curve } = blend;
+    const firstHalf = fraction < .5, current = firstHalf ? from : to, other = firstHalf ? to : from;
+    const worldPoint = (definition?: LabelDefinition) => definition && this.labelPoint(definition, matrixFor).toArray();
     const positions: MotionPosition[] = [];
     for (const label of current.values()) {
       if (!visible(label.partId)) continue;
       const pair = other.get(label.id), world = this.labelPoint(label, matrixFor);
       let offset = label.offset;
       if (pair && visible(pair.partId)) {
-        const blend = firstHalf ? t : 1 - t;
-        world.lerp(this.labelPoint(pair, matrixFor), blend);
-        offset = interpolateOffset(label.offset, pair.offset, blend);
+        if (curve) {
+          const previous = before?.get(label.id), next = after?.get(label.id);
+          const [start, end] = firstHalf ? [label, pair] : [pair, label];
+          const otherPoint = this.labelPoint(pair, matrixFor).toArray(), point = world.toArray();
+          world.fromArray(curveVector(curve, firstHalf ? point : otherPoint, firstHalf ? otherPoint : point, worldPoint(previous), worldPoint(next)));
+          offset = curveOffset(curve, start.offset, end.offset, previous?.offset, next?.offset);
+        } else {
+          const progress = firstHalf ? fraction : 1 - fraction;
+          world.lerp(this.labelPoint(pair, matrixFor), progress);
+          offset = interpolateOffset(label.offset, pair.offset, progress);
+        }
       }
       if (world.clone().applyMatrix4(camera.matrixWorldInverse).z >= 0) continue;
       const { anchorX, anchorY } = projectLabelAnchor(world.clone().project(camera), layout.viewport);
@@ -561,44 +583,62 @@ export class Viewport {
     return positions;
   }
   private preparePlaybackLabels(layout: PlaybackLayout): void {
-    const { project, segment: { step, from, to, duration }, viewport: { width, height } } = layout;
+    const { project, segment, viewport: { width, height }, cameraFallback } = layout, { step, from, to, duration, before, after } = segment;
     const measure = (frame: Keyframe): Map<string, MeasuredLabel> => new Map(this.describeLabels(project, step, frame).map(label => {
       const element = this.labelElement(label); element.style.visibility = 'hidden'; this.labelsHost.append(element);
       const { width: labelWidth, height: labelHeight } = this.measureLabel(element, label.text, width); element.remove();
       return [label.id, { ...label, width: labelWidth, height: labelHeight }];
     }));
+    const neighbor = (frame: Keyframe | undefined) => frame && new Map(this.describeLabels(project, step, frame)
+      .filter(label => !frame.hidden.includes(label.partId)).map(label => [label.id, label]));
     const first = measure(from);
-    const labels = { from: first, to: from === to ? first : measure(to) };
+    const labels = { from: first, to: from === to ? first : measure(to), before: neighbor(before), after: neighbor(after) };
     layout.labels = labels;
     if (from === to || (!labels.from.size && !labels.to.size)) return;
     const visibility = modelVisibility(project).parts, parts = new Map(project.model.parts.map(part => [part.id, part]));
     const camera = this.camera.clone(), position = new THREE.Vector3(), rotation = new THREE.Quaternion(), scale = new THREE.Vector3(1, 1, 1);
     const hiddenAtStart = new Set(from.hidden), hiddenAtEnd = new Set(to.hidden);
     layout.labels.tracks = planLabelMotion(duration, width, height, progress => {
-      const t = easeMotion(progress), state = interpolateCamera(layout.fromCamera, layout.toCamera, t);
+      const blend = playbackInterpolation(segment, progress);
+      const state = interpolatedFrameCamera(from, to, blend, cameraFallback) ?? cameraFallback;
       camera.position.fromArray(state.eye); camera.up.fromArray(state.up); camera.lookAt(position.fromArray(state.target)); camera.updateMatrixWorld();
-      const matrices = new Map<string, THREE.Matrix4>(), hidden = t < .999 ? hiddenAtStart : hiddenAtEnd;
+      const matrices = new Map<string, THREE.Matrix4>(), hidden = blend.fraction < .999 ? hiddenAtStart : hiddenAtEnd;
       const matrixFor = (id: string): THREE.Matrix4 => {
         const cached = matrices.get(id); if (cached) return cached;
-        const part = parts.get(id)!, end = to.poses[id], start = from.poses[id] ?? end;
-        const pose = t === 0 ? from.poses[id] ?? homePose(part) : start && end ? interpolatePose(start, end, t) : homePose(part);
+        const part = parts.get(id)!;
+        const pose = interpolatedFramePose(from, to, id, blend) ?? homePose(part);
         const matrix = new THREE.Matrix4().compose(position.fromArray(pose.position), rotation.fromArray(pose.quaternion), scale);
         matrices.set(id, matrix); return matrix;
       };
-      return this.projectedLabels(layout, progress, camera, matrixFor, id => (visibility.get(id) ?? true) && !hidden.has(id) && !this.displayHidden.has(id) && (!this.isolated.size || this.isolated.has(id)));
+      return this.projectedLabels(layout, blend, camera, matrixFor, id => (visibility.get(id) ?? true) && !hidden.has(id) && !this.displayHidden.has(id) && (!this.isolated.size || this.isolated.has(id)));
     });
   }
   private animatedLabelBoxes(layout: PlaybackLayout, progress: number): Map<string, MotionPosition> {
     if (!layout.labels) this.preparePlaybackLabels(layout);
-    const preferred = this.projectedLabels(layout, progress, this.camera, id => this.meshes.get(id)!.matrixWorld, id => !!this.meshes.get(id)?.visible);
+    const preferred = this.projectedLabels(layout, playbackInterpolation(layout.segment, progress), this.camera, id => this.meshes.get(id)!.matrixWorld, id => !!this.meshes.get(id)?.visible);
     const tracks = layout.labels?.tracks, { width, height } = layout.viewport;
     const boxes = tracks ? preferred.map(box => positionAnimatedLabel(box, tracks.get(box.id), progress, width, height))
       : arrangeLabelBoxes(preferred, width, height);
     return new Map(boxes.map(box => [box.id, box]));
   }
+  private updateAnnotationPins(): void {
+    if (!this.annotationPins.length) return;
+    const projectedHeight = this.renderSize.height * this.camera.projectionMatrix.elements[5];
+    const cameraPoint = new THREE.Vector3();
+    for (const { mesh, anchor, labelId } of this.annotationPins) {
+      const { point, visible } = this.worldAnchor(anchor);
+      const animated = labelId === undefined ? undefined : this.playbackBoxes?.get(labelId);
+      mesh.position.copy(animated?.world ?? point);
+      const depth = -cameraPoint.copy(mesh.position).applyMatrix4(this.camera.matrixWorldInverse).z;
+      mesh.visible = visible && depth > 0 && projectedHeight > 0;
+      if (!mesh.visible) continue;
+      // Keep the pin in the 3D render pass for section clipping while sizing it in viewport pixels.
+      mesh.quaternion.copy(this.camera.quaternion);
+      mesh.scale.setScalar(2 * LEADER_DOT_RADIUS * depth / projectedHeight);
+    }
+  }
   private updateAnnotations(): void {
     const viewport = this.annotationViewport, { width, height, fullWidth, insetX } = viewport;
-    if (this.project) this.constructionAxes.update(this.project, this.meshes, this.camera, height);
     for (const child of this.annotationRoot.children) { const id: unknown = child.userData.partId; if (typeof id !== 'string') continue; const mesh = this.meshes.get(id); if (!mesh) continue; child.position.copy(mesh.position); child.quaternion.copy(mesh.quaternion); child.visible = mesh.visible; }
     this.leaderSvg.setAttribute('viewBox', `${-insetX} 0 ${fullWidth} ${height}`); this.leaderSvg.replaceChildren();
     this.annotationOverlay.update(this.frame?.notes ?? [], this.camera, fullWidth, height, anchor => {
@@ -607,6 +647,7 @@ export class Viewport {
     });
     const playback = this.draggingLabel ? undefined : this.playback;
     this.playbackBoxes = playback ? this.animatedLabelBoxes(playback.layout, playback.progress) : undefined;
+    this.updateAnnotationPins();
     const positions: { label: Label; x: number; y: number; width: number; height: number; anchorX: number; anchorY: number }[] = [];
     for (const label of this.labels) {
       const mesh = this.meshes.get(label.partId); if (!mesh) continue;
@@ -633,7 +674,7 @@ export class Viewport {
       const line = document.createElementNS('http://www.w3.org/2000/svg', 'line'); line.setAttribute('x1', String(box.anchorX)); line.setAttribute('y1', String(box.anchorY)); line.setAttribute('x2', String(Math.max(box.x, Math.min(box.x + box.width, box.anchorX)))); line.setAttribute('y2', String(Math.max(box.y, Math.min(box.y + box.height, box.anchorY)))); line.setAttribute('stroke', label.color); line.setAttribute('stroke-width', String(ANNOTATION_LINE_WIDTH)); this.leaderSvg.append(line);
       if (label.isPart) {
         const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        dot.setAttribute('cx', String(box.anchorX)); dot.setAttribute('cy', String(box.anchorY)); dot.setAttribute('r', String(PART_LABEL_DOT_RADIUS)); dot.setAttribute('fill', PART_LABEL_DOT_COLOR); this.leaderSvg.append(dot);
+        dot.setAttribute('cx', String(box.anchorX)); dot.setAttribute('cy', String(box.anchorY)); dot.setAttribute('r', String(LEADER_DOT_RADIUS)); dot.setAttribute('fill', PART_LABEL_DOT_COLOR); this.leaderSvg.append(dot);
       }
     }
   }
@@ -725,7 +766,7 @@ export class Viewport {
     for (const box of layouts) {
       context.lineWidth = ANNOTATION_LINE_WIDTH; context.strokeStyle = box.label.color; context.beginPath(); context.moveTo(box.anchorX, box.anchorY);
       context.lineTo(Math.max(box.x, Math.min(box.x + box.width, box.anchorX)), Math.max(box.y, Math.min(box.y + box.height, box.anchorY))); context.stroke();
-      if (box.label.isPart) { context.beginPath(); context.arc(box.anchorX, box.anchorY, PART_LABEL_DOT_RADIUS, 0, Math.PI * 2); context.fillStyle = PART_LABEL_DOT_COLOR; context.fill(); }
+      if (box.label.isPart) { context.beginPath(); context.arc(box.anchorX, box.anchorY, LEADER_DOT_RADIUS, 0, Math.PI * 2); context.fillStyle = PART_LABEL_DOT_COLOR; context.fill(); }
     }
     for (const box of layouts) {
       const { style, label } = box; context.save(); context.beginPath(); context.roundRect(box.x, box.y, box.width, box.height, Math.min(parseFloat(style.borderRadius) || 0, box.height / 2));
@@ -757,14 +798,46 @@ export class Viewport {
     this.dirty = true;
   }
   private updateDepthRange(): void {
-    this.camera.updateMatrixWorld(true); this.transparentDepth.clear();
-    this.meshes.forEach(mesh => { if (mesh.visible && mesh.material.transparent && mesh.geometry.boundingBox) this.transparentDepth.set(mesh.id, mesh.geometry.boundingBox.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(this.camera.matrixWorldInverse, mesh.matrixWorld)).max.z); });
+    const camera = this.camera;
+    camera.updateMatrixWorld(true); this.transparentDepth.clear();
     this.lightRig.quaternion.copy(this.camera.quaternion); this.lightRig.updateMatrixWorld(true);
-    const bounds = new THREE.Box3(); this.meshes.forEach(mesh => { if (mesh.visible) bounds.expandByObject(mesh); }); if (bounds.isEmpty()) return;
+    if (this.project) this.constructionAxes.update(this.project, this.meshes, camera, this.renderSize.height);
+    const projection = camera.projectionMatrix.elements;
+    const sideSlopes = [(1 + projection[8]) / projection[0], (1 - projection[8]) / projection[0],
+      (1 + projection[9]) / projection[5], (1 - projection[9]) / projection[5]];
+    const bounds = new THREE.Box3(), view = new THREE.Box3(), world = new THREE.Box3(), modelView = new THREE.Matrix4();
+    let closest = Infinity, farthest = 0;
+    const includeDepth = (object: THREE.Mesh | THREE.Line) => {
+      const geometry = object.geometry;
+      if (!geometry.boundingBox) geometry.computeBoundingBox();
+      const local = geometry.boundingBox!;
+      view.copy(local).applyMatrix4(modelView.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld));
+      // Clip the camera-space box to the side planes only. The previous near plane must not hide newly visible geometry.
+      let first = Math.max(0, -view.max.z), last = -view.min.z;
+      const sides = [view.min.x, -view.max.x, view.min.y, -view.max.y];
+      for (let i = 0; i < sides.length && first <= last; i++) {
+        const slope = sideSlopes[i];
+        if (slope > 0) first = Math.max(first, sides[i] / slope);
+        else if (slope < 0) last = Math.min(last, sides[i] / slope);
+        else if (sides[i] > 0) return;
+      }
+      if (first <= last) { closest = Math.min(closest, first); farthest = Math.max(farthest, last); }
+    };
+    for (const mesh of this.meshes.values()) {
+      if (!mesh.visible) continue;
+      includeDepth(mesh);
+      bounds.union(world.copy(mesh.geometry.boundingBox!).applyMatrix4(mesh.matrixWorld));
+      if (mesh.material.transparent) this.transparentDepth.set(mesh.id, view.max.z);
+    }
+    if (bounds.isEmpty()) return;
     if (this.sectionActive) this.sectionView.update(bounds);
-    const radius = bounds.getSize(new THREE.Vector3()).length() / 2; const distance = this.camera.position.distanceTo(bounds.getCenter(new THREE.Vector3()));
-    const near = Math.max(.05, distance - radius * 1.12); const far = Math.max(near + 1, distance + radius * 1.2);
-    if (Math.abs(this.camera.near - near) > .001 || Math.abs(this.camera.far - far) > .001) { this.camera.near = near; this.camera.far = far; this.camera.updateProjectionMatrix(); }
+    this.constructionAxes.root.traverseVisible(object => { if (object instanceof THREE.Line) includeDepth(object); });
+    if (this.axes.visible) includeDepth(this.axes);
+    const radius = bounds.getSize(new THREE.Vector3()).length() / 2;
+    const distance = camera.position.distanceTo(bounds.getCenter(new THREE.Vector3()));
+    const near = Math.max(.05, Number.isFinite(closest) ? closest * .9 : distance - radius * 1.12);
+    const far = Math.max(near + 1, distance + radius * 1.2, farthest * 1.05);
+    if (Math.abs(camera.near - near) > .001 || Math.abs(camera.far - far) > .001) { camera.near = near; camera.far = far; camera.updateProjectionMatrix(); }
   }
   private renderScene(): void {
     this.composer.render();

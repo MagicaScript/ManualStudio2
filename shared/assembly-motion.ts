@@ -34,29 +34,43 @@ export function isRigidMotion(value: unknown): value is RigidMotion {
 }
 
 export type PartTransform = (id: string) => { part: Part; matrix: Matrix4 } | undefined;
+export interface WorldAxis { origin: Vector3; direction: Vector3 }
+export interface RigidDelta { rotation: Quaternion; translation: Vector3 }
+export function rotationDelta(axis: WorldAxis, angle: number): RigidDelta {
+  const rotation = new Quaternion().setFromAxisAngle(axis.direction, angle);
+  return { rotation, translation: axis.origin.clone().sub(axis.origin.clone().applyQuaternion(rotation)) };
+}
 export function poseMatrix(pose: Pose): Matrix4 {
   return new Matrix4().compose(new Vector3(...pose.position), new Quaternion(...pose.quaternion), new Vector3(1, 1, 1));
 }
-export function axisComponentMatrix(axis: ConstructionAxis, lookup: PartTransform): Matrix4 {
-  let common: Matrix4 | undefined;
+function* axisOwnerTransforms(axis: ConstructionAxis, lookup: PartTransform): Generator<Matrix4> {
   for (const id of axis.partIds) {
     const input = lookup(id);
-    if (!input) continue;
-    const transform = input.matrix.clone().multiply(poseMatrix(input.part.home).invert());
+    if (input) yield input.matrix.clone().multiply(poseMatrix(input.part.home).invert());
+  }
+}
+export function axisComponentMatrix(axis: ConstructionAxis, lookup: PartTransform): Matrix4 {
+  let common: Matrix4 | undefined;
+  for (const transform of axisOwnerTransforms(axis, lookup)) {
     if (common && common.elements.some((value, index) => Math.abs(value - transform.elements[index]) > 1e-6)) return new Matrix4();
     common = transform;
   }
   return common ?? new Matrix4();
 }
-export function resolveAxis(reference: AxisReference, axes: ConstructionAxis[], lookup: PartTransform): { origin: Vector3; direction: Vector3 } {
+export function resolveAxis(reference: AxisReference, axes: ConstructionAxis[], lookup: PartTransform, requireUniquePlacement = false): WorldAxis {
   if ('axisId' in reference) {
     const axis = axes.find(axis => axis.id === reference.axisId);
     if (!axis) throw new Error(`Unknown construction axis: ${reference.axisId}.`);
-    const matrix = axisComponentMatrix(axis, lookup);
-    return {
+    const at = (matrix: Matrix4) => ({
       origin: new Vector3(...axis.origin).applyMatrix4(matrix),
       direction: new Vector3(...axis.direction).transformDirection(matrix),
-    };
+    });
+    if (!requireUniquePlacement) return at(axisComponentMatrix(axis, lookup));
+    const [resolved, ...others] = [...axisOwnerTransforms(axis, lookup)].map(at);
+    if (resolved && others.some(other => resolved.origin.distanceToSquared(other.origin) > 1e-12 || resolved.direction.distanceToSquared(other.direction) > 1e-12)) {
+      throw new Error(`Construction axis ${axis.id} has multiple placements. Provide a world or part-local axis.`);
+    }
+    return resolved ?? at(new Matrix4());
   }
   const origin = new Vector3(...reference.origin), direction = new Vector3(...reference.direction).normalize();
   if (reference.partId !== undefined) {
@@ -68,7 +82,7 @@ export function resolveAxis(reference: AxisReference, axes: ConstructionAxis[], 
   return { origin, direction };
 }
 
-export function motionPartIds(members: MotionMembers, parts: ReadonlyMap<string, Part>, step?: AssemblyStep): string[] {
+export function motionPartIds(members: MotionMembers, parts: ReadonlyMap<string, Part>, step?: AssemblyStep, includeRetained = false): string[] {
   const ids = new Set(members.partIds);
   for (const groupId of members.groupIds ?? []) {
     const group = step?.groups.find(group => group.id === groupId);
@@ -76,7 +90,7 @@ export function motionPartIds(members: MotionMembers, parts: ReadonlyMap<string,
     for (const id of group.partIds) ids.add(id);
   }
   if (!ids.size) throw new Error('Select at least one part to move.');
-  for (const id of ids) if (parts.get(id)?.sourceStatus !== 'active') throw new Error(`Unknown active part: ${id}.`);
+  for (const id of ids) if (includeRetained ? !parts.has(id) : parts.get(id)?.sourceStatus !== 'active') throw new Error(`Unknown ${includeRetained ? 'motion' : 'active'} part: ${id}.`);
   return [...ids];
 }
 

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyCommand, copy, emptyProject, finalAssembly, findStep, frameQueue, validateProject } from '../shared/document.ts';
+import type { Command } from '../shared/types.ts';
 import { parse3mf } from '../server/import-3mf.ts';
 import { transactionModel } from './fixtures/assembly-transaction.ts';
 
@@ -47,11 +48,35 @@ test('full coverage merge retains composite Start and End in the single editable
   assert.deepEqual(findStep(project, id), { ...previousFinal, final: false }); assert.equal(project.steps.filter(step => step.final).length, 1);
 });
 
-test('full merge cannot discard the previous Final when preserving it would exceed the ordinary-step limit', () => {
+test('add, copy and partial merge accept ordinary step 255 and reject step 256', () => {
+  const { project, first, second } = fixture();
+  while (project.steps.length < 254) applyCommand(project, { type: 'step.add' });
+  const final = applyCommand(project, { type: 'step.final', stepId: first.id, value: true });
+  const commands: Command[] = [
+    { type: 'step.add' },
+    { type: 'step.copy', stepId: first.id },
+    { type: 'step.merge', stepIds: [first.id, second.id] },
+  ];
+  for (const command of commands) {
+    const draft = copy(project);
+    assert.ok(applyCommand(draft, command));
+    assert.equal(draft.steps.length, 256);
+    assert.equal(draft.steps.at(-1)?.id, final);
+    const atCapacity = copy(draft);
+    assert.throws(() => applyCommand(draft, command), /No more than 255 assembly steps/);
+    assert.deepEqual(draft, atCapacity);
+  }
+});
+
+test('a full merge can create Final at the limit but cannot demote a previous Final', () => {
   const { project, first, second, third } = fixture();
-  applyCommand(project, { type: 'step.merge', stepIds: [first.id, second.id, third.id] });
-  while (project.steps.filter(step => !step.final).length < 99) applyCommand(project, { type: 'step.add' });
+  while (project.steps.length < 255) applyCommand(project, { type: 'step.add' });
+  const merge: Command = { type: 'step.merge', stepIds: [first.id, second.id, third.id] };
+  const id = applyCommand(project, merge);
+  assert.equal(project.steps.at(-1)?.id, id);
+  assert.equal(project.steps.at(-1)?.final, true);
+  assert.equal(project.steps.length, 256);
   const original = copy(project);
-  assert.throws(() => applyCommand(project, { type: 'step.merge', stepIds: [first.id, second.id, third.id] }), /Preserving the previous Final/);
+  assert.throws(() => applyCommand(project, merge), /Preserving the previous Final.*maximum 255/);
   assert.deepEqual(project, original);
 });

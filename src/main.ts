@@ -15,14 +15,14 @@ import { createPickerDraft, pickerCommands, stagePickerAssembly, type PickerDraf
 import { Quaternion, Vector3 } from 'three';
 import { Viewport, type NameTarget, type ViewTool } from './viewport.ts';
 import { editInlineName } from './inline-name.ts';
-import { applyCommand, assembledPartIds, assemblySnapshot, copy, teardownPoses, findFrame, findPart, findStep, frameLabels, frameQueue, homePose, mergeCoversWholeModel, uid } from '../shared/document.ts';
+import { applyCommand, assembledPartIds, assemblySnapshot, copy, teardownPoses, findFrame, findPart, findStep, frameLabels, frameQueue, homePose, MAX_ORDINARY_STEPS, mergeCoversWholeModel, uid } from '../shared/document.ts';
 import { DEFAULT_DISPLAY_MODE, isDisplayMode, type Anchor, type AssemblyStep, type Command, type DisplayMode, type FrameLabels, type Keyframe, type LabelLayoutRequest, type ModelTreeNode, type Note, type NoteKind, type Part, type Pose, type Project, type SessionState, type Settings, type SyncPlan, type Vec3 } from '../shared/types.ts';
 import { escape as esc, element, icon, menu, modal, pickFile, toast, busy } from './ui.ts';
 import { download, exportProject, inspectLabelLayout, type ExportKind } from './export.ts';
 import { nextListPart, rangeSelection } from '../shared/selection.ts';
 import { browserRoots, findBrowserNode, modelVisibility, nodeOwnVisibility, nodePartIds } from '../shared/model-tree.ts';
 import { DEFAULT_GLUE_COLOR, DEFAULT_NOTE_COLOR } from '../shared/render-style.ts';
-import { playbackCard, playbackDuration, playbackPlan, resumeAfterTitle, type PlaybackSegment } from '../shared/playback.ts';
+import { continuousBoundary, playbackCard, playbackDuration, playbackPlan, resumeAfterTitle, stepPlayback, type PlaybackSegment } from '../shared/playback.ts';
 import type { RenderScope } from '../shared/render-scope.ts';
 import { drawPlaybackCard } from './playback-card.ts';
 import type { FusionBridgeState, FusionJobState } from '../server/fusion.ts';
@@ -207,8 +207,9 @@ function scrubTo(value: number, notify = true): void {
   if (stepId !== first.step.id) setSectionValue(0);
   stepId = first.step.id; frameId = first.frame.id; editedPoses = undefined; activeNoteId = undefined;
   selected = selected.filter(id => first.step.partIds.includes(id));
-  const moving = first !== second && first.step.id === second.step.id, target = moving ? second.frame : first.frame;
-  render(); view.showPlayback(project, { kind: moving ? 'motion' : 'hold', duration: target.duration, step: first.step, from: first.frame, to: target }, position % 1, display, explosion); view.select(selected);
+  const segment: PlaybackSegment = first !== second && first.step.id === second.step.id ? stepPlayback(project, first.step, first.frame)
+    : { kind: 'hold', duration: first.frame.duration, step: first.step, from: first.frame, to: first.frame };
+  render(); view.showPlayback(project, segment, position % 1, display, explosion); view.select(selected);
   timelinePosition = position; element<HTMLInputElement>('#playSlider').value = String(position); element('#frameNumber').textContent = `${index + 1}/${queue.length}`;
   if (notify) sendSession();
 }
@@ -308,9 +309,9 @@ function updateStructureActions(): void {
   if (!merging || !project) return;
   const sources = project.steps.filter(step => merging!.has(step.id)), complete = mergeCoversWholeModel(project, sources);
   const all = element<HTMLInputElement>('#mergeAll'); all.checked = sources.length === project.steps.length; all.indeterminate = sources.length > 0 && sources.length < project.steps.length;
-  const full = project.steps.filter(step => !step.final).length >= 99, previousFinal = project.steps.some(step => step.final), needsSlot = !complete || previousFinal;
+  const full = project.steps.filter(step => !step.final).length >= MAX_ORDINARY_STEPS, previousFinal = project.steps.some(step => step.final), needsSlot = !complete || previousFinal;
   const confirm = element<HTMLButtonElement>('#confirmMerge'); confirm.disabled = sources.length < 2 || needsSlot && full;
-  confirm.title = needsSlot && full ? 'Preserving all source steps requires an available ordinary-step slot (maximum 99).' : 'Merge selected cards and keep all source steps';
+  confirm.title = needsSlot && full ? `Preserving all source steps requires an available ordinary-step slot (maximum ${MAX_ORDINARY_STEPS}).` : 'Merge selected cards and keep all source steps';
   element('#mergeResult').textContent = complete ? previousFinal ? 'Keep previous Final as a step; add Final assembly' : 'Add Final assembly; original steps remain' : 'Add Merged Step; original steps remain';
 }
 function beginMerge(): void {
@@ -529,7 +530,7 @@ async function updateNoteAnchors(noteId: string, update: (anchors: Anchor[]) => 
 function renderNoteEditor(): void {
   const focused = document.activeElement; if (focused instanceof HTMLTextAreaElement && focused.id === 'noteText') return;
   document.querySelector('.note-editor')?.remove(); const note = getFrame()?.notes.find(n => n.id === activeNoteId); if (!note) return;
-  const sizeField = ['glue', 'arrow', 'pencil'].includes(note.kind) ? '' : `<label>Size (mm)<input id="noteSize" type="number" min=".2" step=".5" value="${note.size}"></label>`;
+  const sizeField = note.kind === 'rectangle' || note.kind === 'circle' ? `<label>Size (mm)<input id="noteSize" type="number" min=".2" step=".5" value="${note.size}"></label>` : '';
   const colorControl = isShapeNote(note.kind)
     ? noteColorPalette('editNoteColor', 'color', note.color, note.id)
     : `<label>Color <input id="editNoteColor" type="color" value="${note.color}"></label>`;
@@ -626,8 +627,12 @@ function startPlayback(local = false): void {
   let elapsed = (resume?.progress ?? 0) * activePlaybackPlan[index].duration * 1000, previousTime = performance.now();
   selected = []; view.select([]); playing = true; const button = element<HTMLButtonElement>('#playButton'); button.innerHTML = icon('pause'); button.title = 'Pause playback'; button.setAttribute('aria-label', button.title); showPlaybackSegment(activePlaybackPlan[index], resume?.progress ?? 0); sendSession();
   const tick = (): void => {
-    if (!project || !playing) return; const current = activePlaybackPlan[index];
+    if (!project || !playing) return; let current = activePlaybackPlan[index];
     const speed = Number(element<HTMLSelectElement>('#playSpeed').value), now = performance.now(); elapsed += (now - previousTime) * current.duration / playbackDuration(current, speed); previousTime = now;
+    while (elapsed >= current.duration * 1000 && continuousBoundary(current, activePlaybackPlan[index + 1])) {
+      elapsed -= current.duration * 1000;
+      current = activePlaybackPlan[++index];
+    }
     const t = Math.min(1, elapsed / (current.duration * 1000)); pausedPlayback = { local, index, progress: t, stepId: current.step.id }; showPlaybackSegment(current, t);
     if (t >= 1) { index++; elapsed = 0; if (index >= activePlaybackPlan.length) { stopPlayback(); render(); sendSession(); return; } }
     playRaf = requestAnimationFrame(tick);
@@ -881,7 +886,7 @@ function viewportPartMenu(id: string, event: PointerEvent): void {
   const ids = selected.filter(partId => current || !overviewUnassembled.checked || view.meshes.get(partId)?.visible);
   const canChooseStep = !current && ids.length > 0;
   menu({ x: event.clientX, y: event.clientY }, [
-    { label: 'Add to New Step', disabled: !canChooseStep || ordinarySteps.length >= 99, action: async () => {
+    { label: 'Add to New Step', disabled: !canChooseStep || ordinarySteps.length >= MAX_ORDINARY_STEPS, action: async () => {
       await commit([{ type: 'step.add', parts: ids }], 'step');
       sendSession();
     } },

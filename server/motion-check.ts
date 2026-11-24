@@ -1,15 +1,14 @@
 import { Vector3 } from 'three';
 import { isAxisReference, isFiniteNumber, isIdList, isMotionMembers, isPose, isRecord, motionPartIds, poseMatrix, resolveAxis } from '../shared/assembly-motion.ts';
-import { findFrame, interpolatePose } from '../shared/document.ts';
-import { easeMotion } from '../shared/playback.ts';
-import type { Keyframe, Pose, Project } from '../shared/types.ts';
+import { findFrame, interpolatedFramePose, interpolatePose } from '../shared/document.ts';
+import { easeMotion, playbackInterpolation, stepPlayback, type PlaybackSegment } from '../shared/playback.ts';
+import type { Pose, Project } from '../shared/types.ts';
 import { loadGeometry, poseContext } from './geometry-data.ts';
 import { collisionMesh, meshContact, meshPlacement, type Contact } from './motion-contact.ts';
 
-interface MotionSegment {
-  from: Readonly<Record<string, Pose>>; to: Readonly<Record<string, Pose>>; duration: number;
-  fromFrameId?: string; toFrameId?: string;
-}
+type MotionSegment = { duration: number } & ({ playback: PlaybackSegment } | {
+  from: Readonly<Record<string, Pose>>; to: Readonly<Record<string, Pose>>;
+});
 interface Sample extends Contact { seconds: number; progress: number; segment: number; fromFrameId?: string; toFrameId?: string }
 interface Pair {
   movingPartId: string; obstaclePartId: string; allowed: boolean; minimum: Sample | null;
@@ -26,12 +25,9 @@ function makeSegments(project: Project, path: Record<string, unknown>, context: 
     const from = context.frame!, to = path.toFrameId === undefined ? step.frames.at(-1)! : findFrame(step, path.toFrameId);
     const first = step.frames.indexOf(findFrame(step, from.id)), last = step.frames.indexOf(to);
     if (first >= last) throw new Error('Select an end keyframe after the starting keyframe.');
-    return step.frames.slice(first + 1, last + 1).map((frame: Keyframe, i) => {
-      const previous = step.frames[first + i];
-      return {
-        from: { ...startPoses, ...previous.poses }, to: { ...startPoses, ...frame.poses }, duration: frame.duration,
-        fromFrameId: previous.id, toFrameId: frame.id,
-      };
+    return step.frames.slice(first, last).map(frame => {
+      const playback = stepPlayback(project, step, frame);
+      return { playback, duration: playback.duration };
     });
   }
   if (path.kind === 'insertion') {
@@ -95,18 +91,24 @@ export async function checkMotion(project: Project, directory: string, request: 
   for (const [segmentIndex, segment] of segments.entries()) {
     const intervals = Math.max(1, Math.ceil(segment.duration * sampleRate));
     if (!Number.isSafeInteger(intervals)) throw new Error('The requested sample count is too large.');
+    const fromFrameId = 'playback' in segment ? segment.playback.from.id : undefined;
+    const toFrameId = 'playback' in segment ? segment.playback.to.id : undefined;
     for (let sample = segmentIndex === 0 ? 0 : 1; sample <= intervals; sample++) {
       const progress = sample / intervals, seconds = elapsed + segment.duration * progress;
-      const eased = easeMotion(progress);
-      const placements = new Map(ids.map(id => {
-        const pose = segment.from[id] === segment.to[id] ? segment.from[id] : interpolatePose(segment.from[id], segment.to[id], eased);
-        return [id, meshPlacement(meshById.get(id)!, poseMatrix(pose))];
-      }));
+      let poseAt: (id: string) => Pose;
+      if ('playback' in segment) {
+        const playback = segment.playback, blend = playbackInterpolation(playback, progress);
+        poseAt = id => interpolatedFramePose(playback.from, playback.to, id, blend) ?? startPoses[id];
+      } else {
+        const eased = easeMotion(progress);
+        poseAt = id => segment.from[id] === segment.to[id] ? segment.from[id] : interpolatePose(segment.from[id], segment.to[id], eased);
+      }
+      const placements = new Map(ids.map(id => [id, meshPlacement(meshById.get(id)!, poseMatrix(poseAt(id)))]));
       for (const pair of pairs) {
         const contact = meshContact(placements.get(pair.movingPartId)!, placements.get(pair.obstaclePartId)!,
           Math.max(pair.minimum?.clearance ?? Infinity, minimumClearance));
         if (!contact) continue;
-        const finding = { ...contact, seconds, progress, segment: segmentIndex, fromFrameId: segment.fromFrameId, toFrameId: segment.toFrameId };
+        const finding = { ...contact, seconds, progress, segment: segmentIndex, fromFrameId, toFrameId };
         if (!pair.minimum || contact.clearance < pair.minimum.clearance) pair.minimum = finding;
         const touching = contact.kind !== 'separated';
         if (touching) pair.firstContact ??= finding;

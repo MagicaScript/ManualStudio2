@@ -9,6 +9,7 @@ import { Worker } from 'node:worker_threads';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import { applyCommand, emptyProject, refreshFinalAssembly, uid, validateProject } from '../shared/document.ts';
 import { isRigidMotion } from '../shared/assembly-motion.ts';
+import { isMotionTrack } from '../shared/motion-tracks.ts';
 import { readRenderScope, renderImageSample, renderVideoSlices, type RenderScope } from '../shared/render-scope.ts';
 import { DEFAULT_DISPLAY_MODE, isDisplayMode, type Command, type DisplayMode, type LabelLayoutRequest, type Model, type Part, type Project, type SessionState, type SyncPlan } from '../shared/types.ts';
 import { applySync, planSync } from './sync.ts';
@@ -74,14 +75,15 @@ function analyze(input: AnalysisInput): Promise<unknown> {
 }
 function isCommand(value: unknown): value is Command {
   if (!value || typeof value !== 'object') return false; const c = value as Record<string, unknown>; if (typeof c.type !== 'string') return false;
-  const types = ['step.add', 'step.rename', 'step.delete', 'step.reorder', 'step.copy', 'step.merge', 'step.members', 'step.group', 'step.final', 'step.description', 'part.rename', 'object.rename', 'axis.rename', 'group.rename', 'part.initial', 'part.remove', 'frame.add', 'frame.delete', 'frame.update', 'frame.transform', 'frame.cameraAll', 'note.put', 'note.update', 'note.delete', 'settings.update'];
+  const types = ['step.add', 'step.rename', 'step.delete', 'step.reorder', 'step.copy', 'step.merge', 'step.members', 'step.group', 'step.final', 'step.description', 'part.rename', 'object.rename', 'axis.rename', 'group.rename', 'part.initial', 'part.remove', 'frame.add', 'frame.delete', 'frame.update', 'frame.transform', 'frame.motion', 'frame.cameraAll', 'note.put', 'note.update', 'note.delete', 'settings.update'];
   if (c.type === 'model.pose') return !!c.poses && typeof c.poses === 'object';
   if (!types.includes(c.type)) return false;
   if ((c.type.startsWith('step.') && c.type !== 'step.add' && c.type !== 'step.merge' || c.type.startsWith('frame.') || c.type.startsWith('note.') || c.type === 'part.remove') && typeof c.stepId !== 'string') return false;
   if (c.type === 'step.merge' && (!Array.isArray(c.stepIds) || !c.stepIds.every(id => typeof id === 'string') || new Set(c.stepIds).size < 2)) return false;
-  if (['frame.delete', 'frame.update', 'frame.transform', 'note.put', 'note.update', 'note.delete'].includes(c.type) && typeof c.frameId !== 'string') return false;
+  if (['frame.delete', 'frame.update', 'frame.transform', 'frame.motion', 'note.put', 'note.update', 'note.delete'].includes(c.type) && typeof c.frameId !== 'string') return false;
   if (c.type === 'frame.add' && (typeof c.afterId !== 'string' || c.frameId !== undefined && (typeof c.frameId !== 'string' || !/^[\w-]+$/.test(c.frameId)))) return false;
   if (c.type === 'frame.transform' && (!Array.isArray(c.motions) || !c.motions.length || !c.motions.every(isRigidMotion))) return false;
+  if (c.type === 'frame.motion' && (!Array.isArray(c.motions) || !c.motions.every(isMotionTrack) || c.alignStart !== undefined && typeof c.alignStart !== 'boolean')) return false;
   if (['step.members', 'part.initial', 'part.remove'].includes(c.type) && (!Array.isArray(c.partIds) || !c.partIds.every(p => typeof p === 'string'))) return false;
   if (['step.rename', 'part.rename', 'object.rename', 'axis.rename', 'group.rename'].includes(c.type) && typeof c.name !== 'string') return false;
   if (c.type === 'part.rename' && typeof c.partId !== 'string') return false;
@@ -91,6 +93,8 @@ function isCommand(value: unknown): value is Command {
   if (['frame.update', 'settings.update'].includes(c.type) && (!c.patch || typeof c.patch !== 'object')) return false;
   if (c.type === 'frame.update' && c.patch && typeof c.patch === 'object' && 'image' in c.patch && c.patch.image !== null && typeof c.patch.image !== 'string') return false;
   if (c.type === 'frame.update' && c.patch && typeof c.patch === 'object' && 'xrayPartIds' in c.patch && (!Array.isArray(c.patch.xrayPartIds) || !c.patch.xrayPartIds.every(id => typeof id === 'string'))) return false;
+  if (c.type === 'frame.update' && c.patch && typeof c.patch === 'object' && 'passThrough' in c.patch && typeof c.patch.passThrough !== 'boolean') return false;
+  if (c.type === 'frame.update' && c.patch && typeof c.patch === 'object' && 'incomingMotion' in c.patch) return false;
   if (c.type === 'note.put' && (!c.note || typeof c.note !== 'object')) return false;
   if (c.type === 'step.final' && typeof c.value !== 'boolean') return false;
   return true;
